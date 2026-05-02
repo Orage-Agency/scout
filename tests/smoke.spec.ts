@@ -47,13 +47,17 @@ test("popup opens with sign-in prompt", async () => {
   const extId = new URL(sw.url()).host;
   const popup = await context.newPage();
   await popup.goto(`chrome-extension://${extId}/src/popup/index.html`);
-  await expect(popup.locator("text=Scout")).toBeVisible();
-  await expect(popup.locator("input[type=email]")).toBeVisible();
+  // The email input is the unambiguous tell that the signed-out view rendered.
+  // Wait on it first (popup hydrates async via Supabase auth.getSession).
+  await expect(popup.locator("input[type=email]")).toBeVisible({ timeout: 10000 });
+  await expect(popup.locator("#app")).toContainText("Scout");
 });
 
 test("simulated workflow page", async () => {
   // The smoke test in §11.2.5 expects a bundled test page; we use a data URL
-  // with three buttons, an input, and a navigation to exercise selectors.
+  // with three buttons, an input, and an in-page anchor to exercise selectors
+  // without losing the page (clicking a relative href would re-navigate the
+  // data URL away from itself).
   const page = await context.newPage();
   await page.goto(
     "data:text/html;charset=utf-8," +
@@ -63,13 +67,15 @@ test("simulated workflow page", async () => {
         <button data-testid="approve">Approve</button>
         <button data-testid="reject">Reject</button>
         <input data-testid="note" placeholder="Note" />
-        <a href="?next=1" data-testid="next">Next</a>
+        <a href="#next" data-testid="next">Next</a>
       </body></html>`),
   );
+  await expect(page.locator("h1")).toHaveText("Scout test page");
   // Click each control to generate events the content script will pick up.
   await page.click("[data-testid=approve]");
   await page.fill("[data-testid=note]", "looks fine");
   await page.click("[data-testid=reject]");
   await page.click("[data-testid=next]");
+  // Page should still be present (anchor doesn't navigate away).
   await expect(page.locator("h1")).toHaveText("Scout test page");
 });
