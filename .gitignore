@@ -39,3 +39,6 @@ test-results/
 playwright-report/
 playwright/.cache/
 tests/.chrome-profile*/
+
+# release artifacts (built locally; CI uploads from a fresh build)
+release/

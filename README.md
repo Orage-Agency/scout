@@ -4,6 +4,17 @@ A Chrome extension that captures human workflows and turns them into structured 
 
 > See `scout_v1_build_brief.pdf` (in the user's Downloads at build time) for the full product brief.
 
+## Install
+
+- **End users** — install from the unlisted Chrome Web Store listing (link
+  populated after the first review approves; see [`RELEASE.md`](./RELEASE.md)).
+- **Developers / pre-release testing** — clone the repo, run `pnpm install &&
+  pnpm build`, then `scripts/start-scout.cmd`. Opens a dedicated Chrome
+  window with the unpacked extension preloaded into a separate profile so it
+  doesn't touch your main browser.
+
+Privacy policy: <https://orage-agency.github.io/scout/privacy/>
+
 ## Architecture
 
 - **Chrome MV3 extension** (`apps/extension`) — service worker (recording session manager), content scripts (per-tab event listeners), offscreen document (`MediaRecorder` for audio), popup UI.

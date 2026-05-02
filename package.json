@@ -12,10 +12,12 @@
     "db:push": "supabase db push",
     "db:reset": "supabase db reset",
     "functions:deploy": "supabase functions deploy coach && supabase functions deploy transcribe && supabase functions deploy generate-skill",
-    "test:smoke": "playwright test tests/smoke.spec.ts"
+    "test:smoke": "playwright test tests/smoke.spec.ts",
+    "package": "pnpm build && node scripts/package-extension.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
+    "archiver": "^7.0.1",
     "supabase": "^2.0.0",
     "typescript": "^5.6.3"
   },

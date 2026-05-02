@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Concurrency: only one release at a time per ref so two quick tag pushes
+# can't race each other into the Web Store.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify tag matches manifest version
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          mver=$(node -p "require('./apps/extension/src/manifest.json').version")
+          if [ "$tag" != "$mver" ]; then
+            echo "::error::tag v$tag does not match manifest version $mver"
+            exit 1
+          fi
+          echo "Releasing scout v$mver"
+
+      # Build with the production VITE_SUPABASE_* values (live project) so the
+      # uploaded zip is what end users will run. The anon key is safe to bake
+      # in — it's gated by RLS in the database.
+      - name: Build extension
+        run: pnpm build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+
+      - name: Package zip
+        run: node scripts/package-extension.mjs
+
+      # Upload to the Chrome Web Store. First publish has to be done manually
+      # via the dev console; subsequent updates flow through this action.
+      # The zip name format is `scout-vX.Y.Z.zip`, so for tag `v0.1.0` it's
+      # `release/scout-v0.1.0.zip`.
+      - name: Upload to Chrome Web Store
+        uses: mnao305/chrome-extension-upload@v5.0.0
+        with:
+          file-path: release/scout-${{ github.ref_name }}.zip
+          extension-id: ${{ secrets.CWS_EXTENSION_ID }}
+          client-id: ${{ secrets.CWS_CLIENT_ID }}
+          client-secret: ${{ secrets.CWS_CLIENT_SECRET }}
+          refresh-token: ${{ secrets.CWS_REFRESH_TOKEN }}
+          publish: true
+
+      - name: Attach zip to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/scout-*.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
