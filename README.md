@@ -13,7 +13,7 @@ A Chrome extension that captures human workflows and turns them into structured 
   window with the unpacked extension preloaded into a separate profile so it
   doesn't touch your main browser.
 
-Privacy policy: <https://orage-agency.github.io/scout/privacy/>
+Privacy policy: <https://gist.github.com/Orage-Agency/788e7dcf7a0ec71c5e9bf7438746e651>
 
 ## Architecture
 
