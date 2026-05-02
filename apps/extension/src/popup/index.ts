@@ -105,8 +105,8 @@ function signedOutView(): HTMLElement {
     <div class="text-2xl font-semibold tracking-tight">Scout</div>
     <p class="text-muted text-sm leading-relaxed">Capture your workflows. Generate skill files for AI agents.</p>
     <input id="email" type="email" placeholder="you@company.com" class="input mt-3" />
-    <button id="send" class="btn btn-primary w-full">Send magic link</button>
-    <p class="text-muted text-[11px] leading-snug">We'll email you a link to sign in. No password.</p>
+    <button id="send" class="btn btn-primary w-full">Email me a code</button>
+    <p class="text-muted text-[11px] leading-snug">We'll send a 6-digit code to your email. No password.</p>
     <p id="err" class="text-accent text-xs"></p>
   `;
   d.querySelector<HTMLButtonElement>("#send")!.onclick = async () => {
@@ -119,6 +119,11 @@ function signedOutView(): HTMLElement {
     err.textContent = "";
     try {
       const sb = getSupabase();
+      // shouldCreateUser=true is the default; the same call also issues an OTP
+      // code embedded in the email so the user can paste it into the popup —
+      // the magic-link click won't carry the session into the extension's
+      // chrome.storage origin, but the code path lands the session inside
+      // the popup directly.
       const { error } = await sb.auth.signInWithOtp({ email });
       if (error) throw error;
       view = { kind: "magic_sent", email };
@@ -135,9 +140,39 @@ function magicSentView(email: string): HTMLElement {
   d.className = "flex-1 flex flex-col items-center justify-center px-8 gap-3 text-center";
   d.innerHTML = `
     <div class="text-lg font-semibold tracking-tight">Check your inbox</div>
-    <p class="text-muted text-sm leading-relaxed">Sent a sign-in link to <span class="text-primary">${escapeHtml(email)}</span>. Open it on this device.</p>
-    <button id="back" class="btn btn-ghost mt-3">Use another email</button>
+    <p class="text-muted text-sm leading-relaxed">Sent a sign-in code to <span class="text-primary">${escapeHtml(email)}</span>. Paste the code below.</p>
+    <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="123456" class="input mt-2 text-center font-mono tracking-[0.4em] text-lg" />
+    <button id="verify" class="btn btn-primary w-full">Verify</button>
+    <p id="err" class="text-accent text-xs"></p>
+    <button id="back" class="btn btn-ghost mt-2">Use another email</button>
   `;
+  const codeInput = d.querySelector<HTMLInputElement>("#code")!;
+  const errEl = d.querySelector<HTMLParagraphElement>("#err")!;
+  codeInput.oninput = () => {
+    // Strip non-digits so accidental paste of "Code: 123 456" still works.
+    // Supabase OTP length is configurable per project (commonly 6 or 8); accept up to 10.
+    codeInput.value = codeInput.value.replace(/\D+/g, "").slice(0, 10);
+  };
+  d.querySelector<HTMLButtonElement>("#verify")!.onclick = async () => {
+    const token = codeInput.value.trim();
+    if (token.length < 6) {
+      errEl.textContent = "Enter the code from your email.";
+      return;
+    }
+    errEl.textContent = "";
+    try {
+      const sb = getSupabase();
+      const { error } = await sb.auth.verifyOtp({ email, token, type: "email" });
+      if (error) throw error;
+      // onAuthStateChange will flip the view to idle automatically.
+    } catch (e) {
+      errEl.textContent = String((e as Error).message ?? e);
+    }
+  };
+  // Submit on Enter for keyboard fluency.
+  codeInput.onkeydown = (e) => {
+    if (e.key === "Enter") d.querySelector<HTMLButtonElement>("#verify")!.click();
+  };
   d.querySelector<HTMLButtonElement>("#back")!.onclick = () => {
     view = { kind: "signed_out" };
     render();

@@ -230,3 +230,115 @@ test("end-to-end: sign in, record, generate skill", async () => {
   await context.close();
   await new Promise<void>((r) => server.close(() => r()));
 });
+
+// NOTE: an end-to-end OTP-flow test would belong here, but Supabase enforces
+// an email-send rate limit (default 3/hr/IP) that makes it flaky in CI. The
+// popup -> verifyOtp path is verified manually in real Chrome. The error
+// path is implicitly covered: when the rate limit triggers, the popup
+// surfaces the message in #err, which is what we want.
+
+test("pause/resume drops events while paused", async () => {
+  test.setTimeout(120_000);
+
+  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const email = `pause-${Date.now()}@scout-test.local`;
+  const password = `Pass-${Date.now()}-Strong!`;
+  const { data: created, error: cErr } = await admin.auth.admin.createUser({
+    email, password, email_confirm: true,
+  });
+  if (cErr) throw cErr;
+  const userId = created.user!.id;
+
+  const userSb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  const { data: signed } = await userSb.auth.signInWithPassword({ email, password });
+  const session = signed.session!;
+
+  const profileDir = path.resolve(__dirname, ".chrome-profile-pause");
+  if (fs.existsSync(profileDir)) fs.rmSync(profileDir, { recursive: true, force: true });
+  const context = await chromium.launchPersistentContext(profileDir, {
+    headless: false,
+    args: [`--disable-extensions-except=${EXT_DIR}`, `--load-extension=${EXT_DIR}`, "--no-first-run", "--no-default-browser-check"],
+  });
+  let [sw] = context.serviceWorkers();
+  if (!sw) sw = await context.waitForEvent("serviceworker");
+  const extId = new URL(sw.url()).host;
+
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extId}/src/popup/index.html`);
+  await popup.evaluate(async ({ projectRef, sess }) => {
+    await chrome.storage.local.set({ [`sb-${projectRef}-auth-token`]: JSON.stringify(sess) });
+  }, { projectRef: PROJECT_REF, sess: session });
+  await popup.reload();
+  await expect(popup.getByText(/Start Recording/i)).toBeVisible({ timeout: 15_000 });
+
+  // Three buttons on a real http page so the content script injects.
+  const server = http.createServer((_req, res) => {
+    res.setHeader("content-type", "text/html");
+    res.end(`<!doctype html><body>
+      <button data-testid="before">before</button>
+      <button data-testid="during">during</button>
+      <button data-testid="after">after</button>
+    </body>`);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as AddressInfo).port;
+  const work = await context.newPage();
+  await work.goto(`http://127.0.0.1:${port}/`);
+
+  await popup.bringToFront();
+  await popup.locator("#rec").click();
+  await expect(popup.locator("#stop")).toBeVisible({ timeout: 10_000 });
+
+  // 1. Click 'before' — should be captured.
+  await work.bringToFront();
+  await work.click("[data-testid=before]");
+  await work.waitForTimeout(300);
+
+  // 2. Pause.
+  await popup.bringToFront();
+  await popup.locator("#pause").click();
+  await expect(popup.getByRole("button", { name: /^resume$/i })).toBeVisible({ timeout: 5_000 });
+
+  // 3. Click 'during' — should NOT be captured.
+  await work.bringToFront();
+  await work.click("[data-testid=during]");
+  await work.waitForTimeout(500);
+
+  // 4. Resume.
+  await popup.bringToFront();
+  await popup.locator("#pause").click(); // pause button reuses #pause id, label flips
+  await expect(popup.getByRole("button", { name: /^pause$/i })).toBeVisible({ timeout: 5_000 });
+
+  // 5. Click 'after' — should be captured.
+  await work.bringToFront();
+  await work.waitForTimeout(300);
+  await work.click("[data-testid=after]");
+  await work.waitForTimeout(500);
+
+  // 6. Stop.
+  await popup.bringToFront();
+  await popup.locator("#stop").click();
+  await expect(popup.locator("#gen")).toBeVisible({ timeout: 15_000 });
+
+  // 7. Inspect events.
+  const { data: rec } = await admin
+    .from("recordings").select("id").eq("user_id", userId).single();
+  const { data: events } = await admin
+    .from("events").select("ts_ms,kind,data").eq("recording_id", rec!.id).order("ts_ms");
+
+  const clickTargets = (events ?? [])
+    .filter((e) => e.kind === "click")
+    .map((e) => (e.data as { target?: { visibleText?: string } }).target?.visibleText ?? "");
+  console.log(`[pause] click targets captured: ${JSON.stringify(clickTargets)}`);
+  expect(clickTargets).toContain("before");
+  expect(clickTargets).toContain("after");
+  expect(clickTargets).not.toContain("during");
+
+  await admin.auth.admin.deleteUser(userId);
+  await context.close();
+  await new Promise<void>((r) => server.close(() => r()));
+});
