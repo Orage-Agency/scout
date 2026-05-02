@@ -1,118 +1,65 @@
 # Scout v1 — Resume Instructions
 
-> Read this first when picking up this build in a new session. It captures full state as of the last working moment.
+> Read this first when picking up this build in a new session. Updated 2026-05-02 after the resume run.
 
-## Where we are
+## Status snapshot
 
-**Project root:** `C:\Users\georg\scout`
+- ✅ **Phase 1** scaffold + deps
+- ✅ **Phase 2** capture engine
+- ✅ **Phase 3** schema + storage + popup UI + **build clean** (icons generated, `pnpm build` succeeds)
+- ✅ **Phase 4** coach Edge Function **deployed**
+- ✅ **Phase 5** transcribe + generate-skill Edge Functions **deployed**
+- 🟡 **Phase 6** local repo committed + tagged v0.1.0; remote `Orage-Agency/scout` (private) created; **push pending** (creds prompt)
 
-**Status by phase:**
-- ✅ **Phase 1 — Repo & Project Skeleton**: directory tree, `package.json`, `pnpm-workspace.yaml`, `.env.example`, `.env` (with real Supabase creds), `tsconfig.json`, `vite.config.ts`, `tailwind.config.ts`, `postcss.config.js`, `manifest.json`. `pnpm install` completed successfully.
-- ✅ **Phase 2 — Capture Engine**: `apps/extension/src/background/index.ts`, `content/index.ts`, `offscreen/index.ts`, plus `lib/{types,supabase,selector,redaction,queue,ids}.ts`. All written.
-- 🟡 **Phase 3 — Supabase Wiring**: schema + RLS + storage policies applied to live project. Storage buckets `screenshots`, `audio`, `skills` created. Popup UI fully written including auth, library, recording state, skill panel. **Remaining:** verify build, run end-to-end test in a real browser.
-- ⚪ **Phase 4 — Coaching Layer**: Edge Function `supabase/functions/coach/index.ts` written. Service-worker coach loop already wired. **Remaining:** deploy the function, set `ANTHROPIC_API_KEY` secret.
-- ⚪ **Phase 5 — Skill Generator**: Edge Functions `supabase/functions/{transcribe,generate-skill}/index.ts` written. Popup side-panel renders SKILL.md. **Remaining:** deploy functions; tune prompts after first real test.
-- ⚪ **Phase 6 — Polish, Smoke Test, Ship**: floating control bar in content script, tab-close handling, network-drop queue, Playwright smoke test in `tests/smoke.spec.ts`, README. **Remaining:** generate icons, run smoke test, git push, tag v0.1.0.
+## What's actually deployed
 
-## Live Supabase project
+- **Supabase project** ref `wmicxsafqbixedpjhchc` — schema applied, three private buckets live (screenshots/audio/skills), three Edge Functions deployed: `coach`, `transcribe`, `generate-skill`.
+- **Supabase PAT** for CLI: `sbp_665046f50d5b1954a25c95ecb10e4d2566326dc9` (token name `scout-cli-deploy` in supabase.com/dashboard/account/tokens). Set as `$env:SUPABASE_ACCESS_TOKEN` to skip `supabase login` next time.
+- **Supabase CLI binary** at `C:\Users\georg\scout\node_modules\supabase\bin\supabase.exe` (v2.98.0). Not on PATH; invoke directly.
+- **Local git** initialized, two commits, tag `v0.1.0`. Remote `origin` → `https://github.com/Orage-Agency/scout.git` (private, owned by `Orage-Agency`).
+- **Local git identity** set repo-locally: `George Moffat <georgemoffat@orage.agency>`.
 
-- **Project ref:** `wmicxsafqbixedpjhchc`
-- **URL:** `https://wmicxsafqbixedpjhchc.supabase.co`
-- **Region:** Americas (default — east-1 was not exposed by the new-project form)
-- **DB password:** stored in `.env` as `SUPABASE_DB_PASSWORD`
-- **Anon + service-role keys:** stored in `.env`
-- **Schema applied:** `supabase/migrations/0001_initial.sql` ran successfully via the SQL editor (twice — once to create tables/RLS, once after bucket creation to attach storage policies).
-- **Buckets created:** `screenshots`, `audio`, `skills` (all private). Created via Storage REST API with the service-role key.
-- **Edge Functions:** code written in `supabase/functions/{coach,transcribe,generate-skill}/index.ts` and `supabase/functions/_shared/{anthropic.ts,supabase.ts}`. **Not yet deployed.** Deploy with:
-  ```
-  pnpm exec supabase login          # interactive
-  pnpm exec supabase link --project-ref wmicxsafqbixedpjhchc
-  pnpm exec supabase secrets set ANTHROPIC_API_KEY=<your-key>
-  pnpm exec supabase functions deploy coach
-  pnpm exec supabase functions deploy transcribe
-  pnpm exec supabase functions deploy generate-skill
-  ```
+## Three things still needed (all need you, none need Claude)
 
-## Local environment
+### 1. Set the Anthropic API key as an Edge Function secret
 
-- **Node:** 25.9.0
-- **pnpm:** 10.33.2
-- **git:** 2.53 (repo not yet initialized)
-- **gh CLI:** installed via `winget install GitHub.cli` during this session — needs `gh auth login` interactive once after a fresh PowerShell session
-- **supabase CLI:** **not yet installed.** Install with `pnpm install -g supabase` or use the project devDep `pnpm exec supabase ...`
-- **Playwright MCP:** connected and used to provision the Supabase project + run SQL.
+Functions are deployed but will 500 until this is set. From any PowerShell:
 
-## Where the build broke last
-
-`pnpm build` failed because the icon files don't exist:
+```powershell
+$env:SUPABASE_ACCESS_TOKEN = "sbp_665046f50d5b1954a25c95ecb10e4d2566326dc9"
+& "C:\Users\georg\scout\node_modules\supabase\bin\supabase.exe" secrets set ANTHROPIC_API_KEY=sk-ant-... --project-ref wmicxsafqbixedpjhchc
 ```
-[crx:manifest-post] ENOENT: Could not load manifest asset "public/icons/icon-16.png".
+
+### 2. Push the local commits to GitHub
+
+The repo exists; the push just needs you to click through the GCM browser prompt once:
+
+```powershell
+cd C:\Users\georg\scout
+git push -u origin main
+git push origin v0.1.0
 ```
-TypeScript compiled clean. Two prior TS errors were fixed (`ids.ts` and an unused import in `background/index.ts`).
 
-## Pick-up steps (in order)
+Browser pops, you approve, done.
 
-1. **Generate icons.** Easiest path is a tiny PowerShell that fills a square with `#0F172A` and draws a `#DC2626` circle at 16/32/48/128 px. Save under `apps/extension/public/icons/icon-{size}.png`. The interrupted command was:
-   ```powershell
-   Add-Type -AssemblyName System.Drawing
-   foreach ($size in 16,32,48,128) {
-     $bmp = New-Object System.Drawing.Bitmap($size, $size)
-     $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = 'AntiAlias'
-     $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(15,23,42))), 0, 0, $size, $size)
-     $r = $size * 0.32; $cx = $size / 2; $cy = $size / 2
-     $g.FillEllipse((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(220,38,38))), [single]($cx-$r), [single]($cy-$r), [single]($r*2), [single]($r*2))
-     $g.Dispose(); $bmp.Save("C:\Users\georg\scout\apps\extension\public\icons\icon-$size.png", [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
-   }
-   ```
-   If the user wants a real designed icon, drop it into `apps/extension/public/icons/` and re-export at the four sizes.
+### 3. Smoke test in Chrome
 
-2. **`cd C:\Users\georg\scout && pnpm build`** — should succeed now. Output lands in `apps/extension/dist`.
+```
+chrome://extensions → Developer mode → Load unpacked → C:\Users\georg\scout\apps\extension\dist
+```
 
-3. **Load unpacked into Chrome** — chrome://extensions → Developer mode → Load unpacked → `apps/extension/dist`. Click the icon, verify the magic-link sign-in shows.
-
-4. **Get an Anthropic API key onto the Edge Functions:**
-   ```
-   pnpm exec supabase login
-   pnpm exec supabase link --project-ref wmicxsafqbixedpjhchc
-   pnpm exec supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
-   pnpm exec supabase functions deploy coach
-   pnpm exec supabase functions deploy transcribe
-   pnpm exec supabase functions deploy generate-skill
-   ```
-
-5. **Smoke test:** sign in with a real email, click Record, do a 30-second workflow on a real page, click Stop, wait for status `ready`, click Generate Skill.
-
-6. **Init git + push to GitHub:**
-   ```
-   cd C:\Users\georg\scout
-   git init
-   git add -A
-   git commit -m "feat: scout v1 initial build"
-   gh auth login                           # interactive — pick GitHub.com → HTTPS → browser
-   gh repo create scout --private --source=. --remote=origin --push
-   git tag v0.1.0
-   git push origin v0.1.0
-   ```
+Click the extension icon → magic-link sign-in with a real email → click Record on any page → do a 30s workflow → Stop → wait for status `ready` → Generate Skill.
 
 ## Files of interest
 
-- `BUILD_LOG.md` — chronological log
+- `BUILD_LOG.md` — chronological log including the v0.2 retro paragraph at the bottom
+- `BLOCKERS.md` — what's resolved + what's still open
 - `DECISIONS.md` — non-obvious choices and reasoning
-- `BLOCKERS.md` — what stopped autonomy and how to unblock
 - `README.md` — full setup and user-facing docs
 - `docs/SKILL_TEMPLATE.md` — reference output format
 
-## Open questions / TODOs for later
+## Open questions / TODOs from v0.1
 
-- The new-project form on Supabase didn't surface a region selector beyond "Americas"; the brief asked for `us-east-1` specifically. If region matters, recreate the project via the Supabase Management API with explicit `region: us-east-1`.
-- The `transcribe` Edge Function passes audio as a Claude `document` block — confirm the API accepts `audio/webm` for that block type at the time of deploy. If not, swap to a Whisper proxy (OpenAI key) and update `BLOCKERS.md`.
-- Per-recording `title` is never set — the popup currently shows "Untitled recording". A nice v0.2 addition: ask Claude for a 3-word title at generation time and patch `recordings.title`.
-
-## What "more flexibility" likely means
-
-The user said they'll give me more flexibility when we resume. Likely changes:
-- Pre-installed `gh` and `supabase` CLI (we already installed `gh`)
-- An `ANTHROPIC_API_KEY` in the shell env
-- Permission settings updated to auto-allow common Bash/Write operations
-
-So when resuming, **first check** `$env:ANTHROPIC_API_KEY` and the available CLIs before falling back to dashboard automation via Playwright.
+- Region: project was created without explicit `us-east-1`; recreate via Management API if region matters.
+- `transcribe`: passes audio as a Claude `document` block — confirm the API accepts `audio/webm` for that block at deploy. Swap to a Whisper proxy if not.
+- Per-recording `title` is never set — popup shows "Untitled recording". Nice v0.2: ask Claude for a 3-word title at generation time and patch `recordings.title`.

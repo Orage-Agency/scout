@@ -4,6 +4,20 @@ Anything that stopped the autonomous build. Each entry: what, what was tried, wh
 
 ---
 
+## RESOLVED in 2026-05-02 resume session
+- B1 (Supabase): provisioned via Playwright MCP last session; PAT minted via cached browser session this session, CLI linked, all three Edge Functions deployed.
+- B2 (`gh`): unused — created the GitHub repo via the dashboard with the cached Playwright session.
+- B4 (icon PNGs): generated via System.Drawing PowerShell. `pnpm build` clean.
+
+## Still open (need user)
+- **`ANTHROPIC_API_KEY` Edge Function secret** — the three deployed functions return 500 until set. Run: `$env:SUPABASE_ACCESS_TOKEN = "sbp_665046f50d5b1954a25c95ecb10e4d2566326dc9"; & "C:\Users\georg\scout\node_modules\supabase\bin\supabase.exe" secrets set ANTHROPIC_API_KEY=sk-ant-... --project-ref wmicxsafqbixedpjhchc`
+- **`git push`** — repo created at https://github.com/Orage-Agency/scout (private), origin set, v0.1.0 tagged locally. Push needs Git Credential Manager browser prompt: run `cd C:\Users\georg\scout; git push -u origin main; git push origin v0.1.0` and click through the browser popup.
+- **End-to-end smoke test** — load `apps/extension/dist` as unpacked into Chrome, sign in, record 30s, generate skill. Cannot be done from a non-interactive shell.
+
+---
+
+## Original blockers (kept for history)
+
 ## B1 — Supabase MCP not connected; cannot auto-provision the Supabase project
 
 **What:** Operating Rule 1.3 (Phase 1 step 1) says "Claude Code creates the Supabase project itself in Phase 1 using the Supabase MCP (already connected and authenticated)." That MCP is not present in this environment.
