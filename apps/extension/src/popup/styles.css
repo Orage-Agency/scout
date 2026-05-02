@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body { font-family: 'Inter', system-ui, sans-serif; }
+  body { -webkit-font-smoothing: antialiased; }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium px-3 py-2 transition-colors;
+    @apply border border-line bg-elevated text-primary hover:bg-line/50 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply bg-accent border-accent text-primary hover:bg-accent-quiet hover:border-accent-quiet;
+  }
+  .btn-ghost {
+    @apply border-transparent bg-transparent text-muted hover:text-primary hover:bg-elevated;
+  }
+  .input {
+    @apply w-full bg-elevated border border-line rounded-sm px-3 py-2 text-sm text-primary placeholder-muted;
+    @apply focus:outline-none focus:border-accent;
+  }
+  .card {
+    @apply bg-elevated border border-line rounded-md p-4;
+  }
+  .label {
+    @apply text-xs uppercase tracking-wide text-muted;
+  }
+  .record-dot {
+    @apply inline-block w-2.5 h-2.5 rounded-full bg-accent;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* Markdown rendering inside the side panel. */
+.skill-md h1 { @apply text-lg font-semibold mt-3 mb-2; }
+.skill-md h2 { @apply text-sm font-semibold uppercase tracking-wide text-muted mt-4 mb-1; }
+.skill-md p  { @apply text-sm leading-relaxed mb-2; }
+.skill-md ul { @apply list-disc pl-5 text-sm mb-2; }
+.skill-md ol { @apply list-decimal pl-5 text-sm mb-2; }
+.skill-md li { @apply mb-1; }
+.skill-md code { @apply font-mono text-xs bg-base px-1 py-0.5 rounded; }
+.skill-md pre { @apply font-mono text-xs bg-base p-2 rounded overflow-x-auto; }
+.skill-md hr { @apply border-line my-3; }
+.skill-md img { @apply max-w-full rounded my-2 border border-line; }

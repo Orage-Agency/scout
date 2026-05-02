@@ -1,0 +1,40 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+*.pem
+
+# editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# supabase
+supabase/.branches/
+supabase/.temp/
+
+# extension build artifact
+*.crx
+*.zip
+*.pem
+
+# playwright
+test-results/
+playwright-report/
+playwright/.cache/
