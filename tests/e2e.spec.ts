@@ -173,6 +173,9 @@ test("end-to-end: sign in, record, generate skill", async () => {
   // similar. Easiest tell: a heading or the word "Steps".
   await expect(popup.getByText(/^## Steps/m).or(popup.getByText(/Steps/i))).toBeVisible({ timeout: 120_000 });
 
+  // Screenshot the rendered skill view so we can inspect visual polish.
+  await popup.screenshot({ path: path.resolve(__dirname, "../tests/screenshots/skill-view.png"), fullPage: true });
+
   // 12. Pull the rendered SKILL body. The popup renders body_md via marked()
   // into the #app subtree.
   const renderedText = await popup.locator("#app").innerText();

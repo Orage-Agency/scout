@@ -396,9 +396,9 @@ function skillView(rec: RecordingRow, skill: SkillRow | null): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "flex gap-2 mb-3";
   actions.innerHTML = `
-    <button id="dl" class="btn flex-1">Download .md</button>
     <button id="cp" class="btn flex-1">Copy</button>
-    <button id="rg" class="btn">Regenerate</button>
+    <button id="dl" class="btn flex-1">Save .md</button>
+    <button id="rg" class="btn flex-1">Regenerate</button>
   `;
   actions.querySelector<HTMLButtonElement>("#dl")!.onclick = () => downloadMd(skill);
   actions.querySelector<HTMLButtonElement>("#cp")!.onclick = async () => {
@@ -420,7 +420,9 @@ function skillView(rec: RecordingRow, skill: SkillRow | null): HTMLElement {
   const { frontmatter, body } = splitFrontmatter(stripImageRefs(skill.body_md));
   if (frontmatter) {
     const fm = document.createElement("div");
-    fm.className = "card mb-3 text-xs font-mono leading-relaxed text-muted whitespace-pre";
+    // whitespace-pre-wrap preserves newlines but lets long lines wrap inside
+    // the 380px popup column. break-words handles long URL-like values too.
+    fm.className = "card mb-3 text-xs font-mono leading-relaxed text-muted whitespace-pre-wrap break-words";
     fm.textContent = frontmatter;
     d.appendChild(fm);
   }
@@ -497,7 +499,8 @@ sb.auth.onAuthStateChange((_evt, sess) => {
   if (!sess && view.kind !== "signed_out" && view.kind !== "magic_sent") {
     view = { kind: "signed_out" };
     render();
-  } else if (sess && view.kind === "signed_out") {
+  } else if (sess && (view.kind === "signed_out" || view.kind === "magic_sent" || view.kind === "loading")) {
+    // OTP verify lands here — flip from magic_sent (or initial loading) into idle.
     view = { kind: "idle", tab: "record" };
     render();
   }
