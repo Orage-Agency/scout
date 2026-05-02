@@ -379,7 +379,10 @@ function skillView(rec: RecordingRow, skill: SkillRow | null): HTMLElement {
   // Split YAML frontmatter from the markdown body so marked() doesn't mangle
   // the `---\nname: ...\n---` block into a horizontal-rule + heading. We
   // render the frontmatter as a small metadata strip above the prose.
-  const { frontmatter, body } = splitFrontmatter(skill.body_md);
+  // Also strip any `![](step_N.png)` placeholders the model may have added
+  // despite the system prompt — those resolve to non-existent paths inside
+  // the chrome-extension:// origin and would 404.
+  const { frontmatter, body } = splitFrontmatter(stripImageRefs(skill.body_md));
   if (frontmatter) {
     const fm = document.createElement("div");
     fm.className = "card mb-3 text-xs font-mono leading-relaxed text-muted whitespace-pre";
@@ -401,6 +404,13 @@ function splitFrontmatter(md: string): { frontmatter: string; body: string } {
   const m = md.match(/^---\n([\s\S]*?)\n---\n?/);
   if (!m) return { frontmatter: "", body: md };
   return { frontmatter: m[1].trim(), body: md.slice(m[0].length) };
+}
+
+// Remove `![alt](path)` markdown image references from the body. The Edge
+// Function's system prompt asks Claude not to emit these, but it sometimes
+// does — and there's no real image to load in the popup anyway.
+function stripImageRefs(md: string): string {
+  return md.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/[ \t]+\n/g, "\n");
 }
 
 async function generate(recordingId: string, container: HTMLElement, extra?: string): Promise<void> {

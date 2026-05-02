@@ -34,7 +34,9 @@ what the human had to know.>
  - Describes the action in plain English (NOT 'click pixel 423,180')
  - Names the target element by visible text or aria-label
  - Notes any decision logic (e.g., 'if total > $500, also check X')
- - References screenshot filenames where helpful: ![](step_3.png)>
+ - Describes the visible UI state in prose if it disambiguates the step
+ - DO NOT embed image references like ![](step_3.png). The SKILL.md is
+   text-only. Screenshots are available to the agent separately.>
 
 ## Decision rules
 <Captured from the user's narration and the coach's asks. Explicit
@@ -152,6 +154,12 @@ SCREENSHOTS: ${images.length} attached as image blocks below.`;
       .select("*")
       .single();
     if (insErr) return json({ error: insErr.message }, 500);
+
+    // Backfill the recording row's title if it's still null. The library tab
+    // falls back to "Untitled recording" otherwise.
+    if (!rec.title) {
+      await admin.from("recordings").update({ title }).eq("id", recording_id);
+    }
 
     return json(inserted);
   } catch (err) {

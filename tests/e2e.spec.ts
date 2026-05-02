@@ -11,6 +11,8 @@ import { test, expect, chromium, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import path from "node:path";
 import fs from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 
 const EXT_DIR = path.resolve(__dirname, "../apps/extension/dist");
 const USER_DATA_DIR = path.resolve(__dirname, ".chrome-profile-e2e");
@@ -78,10 +80,15 @@ test("end-to-end: sign in, record, generate skill", async () => {
   const extId = new URL(sw.url()).host;
   console.log(`[e2e] extension id ${extId}`);
 
+  // Mirror service-worker console output into the test log so we can see
+  // what the background is doing (audio finalize, transcribe trigger, etc).
+  sw.on("console", (m) => console.log(`[sw ${m.type()}] ${m.text()}`));
+
   // 4. Open popup, inject the session into localStorage, reload.
   const popup = await context.newPage();
   popup.on("console", (m) => console.log(`[popup ${m.type()}] ${m.text()}`));
   popup.on("pageerror", (e) => console.log(`[popup pageerror] ${e.message}`));
+  popup.on("requestfailed", (req) => console.log(`[popup reqfail] ${req.url()} (${req.failure()?.errorText})`));
   await popup.goto(`chrome-extension://${extId}/src/popup/index.html`);
 
   // The popup uses chrome.storage.local via a custom adapter (see
@@ -98,20 +105,35 @@ test("end-to-end: sign in, record, generate skill", async () => {
   await expect(popup.getByText(/Start Recording/i)).toBeVisible({ timeout: 15_000 });
   console.log(`[e2e] popup signed in, idle`);
 
-  // 6. Open a workflow page in another tab — keep popup open in tab 0.
+  // 6. Spin up a tiny local HTTP server so the workflow page is served on
+  // an http://127.0.0.1 origin — content_scripts don't inject into data:
+  // URLs (Chrome scheme restriction), so capture would be empty there.
+  const fixtureHtml = `<!doctype html>
+<html><body style="font:14px sans-serif;padding:32px;max-width:520px;">
+  <h1 style="margin:0 0 16px;">Customer triage queue</h1>
+  <p>Pending refund request from <b>Alex Rivera</b> — order #4421, $128.00.</p>
+  <button data-testid="approve" style="padding:8px 14px;margin-right:8px;">Approve refund</button>
+  <button data-testid="escalate" style="padding:8px 14px;">Escalate to supervisor</button>
+  <div style="margin-top:16px;">
+    <label>Internal notes</label><br>
+    <textarea data-testid="notes" rows="3" cols="60"></textarea>
+  </div>
+  <a href="/done" data-testid="done" style="display:inline-block;margin-top:16px;">Mark done</a>
+</body></html>`;
+  const doneHtml = `<!doctype html><html><body style="font:14px sans-serif;padding:32px;">
+    <h1>Done</h1><p>Refund processed.</p></body></html>`;
+
+  const server = http.createServer((req, res) => {
+    res.setHeader("content-type", "text/html; charset=utf-8");
+    res.end(req.url === "/done" ? doneHtml : fixtureHtml);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as AddressInfo).port;
+  const fixtureUrl = `http://127.0.0.1:${port}/`;
+  console.log(`[e2e] fixture server on ${fixtureUrl}`);
+
   const work = await context.newPage();
-  await work.goto("data:text/html;charset=utf-8," + encodeURIComponent(`
-    <!doctype html><html><body style="font:14px sans-serif;padding:32px;max-width:520px;">
-      <h1 style="margin:0 0 16px;">Customer triage queue</h1>
-      <p>Pending refund request from <b>Alex Rivera</b> — order #4421, $128.00.</p>
-      <button data-testid="approve" style="padding:8px 14px;margin-right:8px;">Approve refund</button>
-      <button data-testid="escalate" style="padding:8px 14px;">Escalate to supervisor</button>
-      <div style="margin-top:16px;">
-        <label>Internal notes</label><br>
-        <textarea data-testid="notes" rows="3" cols="60"></textarea>
-      </div>
-      <a href="#done" data-testid="done" style="display:inline-block;margin-top:16px;">Mark done</a>
-    </body></html>`));
+  await work.goto(fixtureUrl);
 
   // 7. Bring popup forward and click Record.
   await popup.bringToFront();
@@ -119,14 +141,18 @@ test("end-to-end: sign in, record, generate skill", async () => {
   await expect(popup.locator("#stop")).toBeVisible({ timeout: 10_000 });
   console.log(`[e2e] recording started`);
 
-  // 8. Drive a workflow on the work page.
+  // 8. Drive a workflow on the work page. Use type() not fill() so real
+  // keydown events are dispatched (fill() sets value directly, no keystrokes).
   await work.bringToFront();
   await work.waitForTimeout(400);
   await work.click("[data-testid=approve]");
   await work.waitForTimeout(300);
-  await work.fill("[data-testid=notes]", "Refund approved per the no-questions policy under $200.");
+  await work.click("[data-testid=notes]");
+  await work.locator("[data-testid=notes]").type("Refund approved per the no-questions policy under $200.");
   await work.waitForTimeout(300);
   await work.click("[data-testid=done]");
+  // Let the page navigate (server serves /done) and the event flush.
+  await work.waitForLoadState("load").catch(() => undefined);
   await work.waitForTimeout(1500);
 
   // 9. Bring popup forward and click Stop. With the v0.1.1 fixes the popup
@@ -163,9 +189,44 @@ test("end-to-end: sign in, record, generate skill", async () => {
     console.log(`\n========== RAW SKILL.md ==========\n${skills[0].body_md}\n========== END ==========\n`);
   }
 
-  // 14. Cleanup: delete the test user (cascades to recordings/events/skills via FK).
+  // 14. Inspect what was actually captured.
+  const { data: recRow } = await admin
+    .from("recordings")
+    .select("id,title,status,duration_ms,audio_path,transcript")
+    .eq("user_id", userId)
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .single();
+  const { data: events } = await admin
+    .from("events")
+    .select("ts_ms,kind,screenshot_path")
+    .eq("recording_id", recRow!.id);
+  const eventsByKind = (events ?? []).reduce<Record<string, number>>((acc, e) => {
+    acc[e.kind] = (acc[e.kind] ?? 0) + 1; return acc;
+  }, {});
+  const withShot = (events ?? []).filter((e) => e.screenshot_path).length;
+  console.log(`\n[e2e] capture summary:`);
+  console.log(`  title:          ${recRow!.title ?? "(unset)"}`);
+  console.log(`  status:         ${recRow!.status}`);
+  console.log(`  duration:       ${recRow!.duration_ms}ms`);
+  console.log(`  audio_path:     ${recRow!.audio_path ?? "(none)"}`);
+  console.log(`  transcript:     ${JSON.stringify(recRow!.transcript)}`);
+  console.log(`  events total:   ${events?.length ?? 0}`);
+  console.log(`  events by kind: ${JSON.stringify(eventsByKind)}`);
+  console.log(`  events w/ shot: ${withShot}`);
+
+  expect(recRow!.title).toBeTruthy();
+  expect(recRow!.status).toBe("ready");
+  expect(eventsByKind.click).toBeGreaterThan(0);
+  expect(eventsByKind.keydown).toBeGreaterThan(0);
+  expect(eventsByKind.navigation).toBeGreaterThan(0);
+  expect(withShot).toBeGreaterThan(0);
+  expect(eventsByKind.screenshot_failed ?? 0).toBeLessThanOrEqual(1);
+
+  // 15. Cleanup: delete the test user (cascades to recordings/events/skills via FK).
   await admin.auth.admin.deleteUser(userId);
   console.log(`[e2e] deleted test user`);
 
   await context.close();
+  await new Promise<void>((r) => server.close(() => r()));
 });

@@ -26,7 +26,8 @@
     "storage",
     "offscreen",
     "desktopCapture",
-    "clipboardRead"
+    "clipboardRead",
+    "webNavigation"
   ],
   "host_permissions": ["<all_urls>"],
   "web_accessible_resources": [

@@ -83,6 +83,11 @@ async function startRecording(): Promise<RecordingSessionState | null> {
 
   await broadcastToTabs({ type: "content:show_control_bar" });
 
+  // Reset per-recording capture state so failures and rate limits don't carry
+  // across sessions.
+  lastCaptureAt = 0;
+  lastFailureReason = null;
+
   startTimers();
   console.log("[scout] recording started", recordingId);
   return state;
@@ -94,15 +99,17 @@ async function stopRecording(): Promise<void> {
 
   stopTimers();
   await broadcastToTabs({ type: "content:hide_control_bar" });
-  await sendToOffscreen({ type: "offscreen:stop_audio" });
-  // Audio finalization is async — `offscreen:audio_done` posts back here.
-
   await flushBuffer();
 
+  // Serialize the audio finalize so onAudioDone runs to completion BEFORE we
+  // clear the session and exit. Otherwise the parallel 'uploading' update
+  // here can overwrite the 'transcribing' update from onAudioDone.
   const sb = getSupabase();
   const endedAt = Date.now();
   const durationMs = endedAt - state.started_at - state.paused_ms;
 
+  // 1. Mark the row as ended + uploading. Single atomic update; no further
+  //    writes happen here.
   await sb
     .from("recordings")
     .update({
@@ -113,9 +120,42 @@ async function stopRecording(): Promise<void> {
     .eq("id", state.recording_id);
   broadcastRecordingChanged(state.recording_id, "uploading");
 
+  // 2. Tell offscreen to wrap up. We await the response so we know stop()
+  //    has finished and audio_done has been *sent* by the time this resolves.
+  //    The audio_done message is processed by our own onMessage listener
+  //    (onAudioDone) which moves status through transcribing -> ready.
+  const audioPromise = waitForAudioDone(state.recording_id, 8000);
+  try {
+    await chrome.runtime.sendMessage({ type: "offscreen:stop_audio" } satisfies RuntimeMessage);
+  } catch {
+    /* offscreen may have been closed already; we still wait for audio_done */
+  }
+  await audioPromise;
+
+  // 3. Now safe to clear session — finalize is done.
   await saveSession(null);
   await chrome.runtime.sendMessage({ type: "popup:state", state: null }).catch(() => {});
   console.log("[scout] recording stopped", state.recording_id);
+}
+
+// Resolves when onAudioDone has finished processing for the given recording.
+// Times out after timeoutMs to prevent stopRecording from hanging if audio
+// finalization gets wedged (offscreen crash etc).
+const audioDoneWaiters = new Map<string, () => void>();
+function waitForAudioDone(recordingId: string, timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      audioDoneWaiters.delete(recordingId);
+      resolve();
+    };
+    audioDoneWaiters.set(recordingId, done);
+    setTimeout(() => {
+      if (audioDoneWaiters.has(recordingId)) {
+        console.warn("[scout] audio_done timeout for", recordingId);
+        done();
+      }
+    }, timeoutMs);
+  });
 }
 
 async function pauseRecording(): Promise<void> {
@@ -169,37 +209,66 @@ async function onContentEvent(ev: CapturedEvent, sender: chrome.runtime.MessageS
   ev.ts_ms = Date.now() - state.started_at - state.paused_ms;
 
   // Capture a screenshot of the active tab. Some pages (chrome://, pdf viewer)
-  // refuse — we degrade gracefully and log a synthetic event.
+  // refuse — we degrade gracefully. Chrome also rate-limits captureVisibleTab
+  // to a couple of calls per second, so we skip routine character keystrokes
+  // and enforce a minimum gap between captures.
   const tabId = sender.tab?.id ?? null;
-  if (tabId != null && shouldCaptureForKind(ev.kind)) {
+  if (tabId != null && shouldCaptureForEvent(ev) && canCaptureNow()) {
     try {
       const dataUrl = await chrome.tabs.captureVisibleTab(sender.tab?.windowId ?? chrome.windows.WINDOW_ID_CURRENT, {
         format: "jpeg",
         quality: 70,
       });
+      lastCaptureAt = Date.now();
       const screenshotId = uuid();
       ev._screenshotDataUrl = dataUrl;
       ev.screenshot_path = `${state.user_id}/${state.recording_id}/${screenshotId}.jpg`;
       await putScreenshot(screenshotId, dataUrl);
     } catch (err) {
       ev.screenshot_path = null;
-      buffer.push({
-        recording_id: state.recording_id,
-        user_id: state.user_id,
-        ts_ms: ev.ts_ms,
-        kind: "screenshot_failed",
-        data: { reason: String((err as Error)?.message || err), original_kind: ev.kind },
-        _localId: uuid(),
-      });
+      // Log once-per-distinct-reason rather than per-event so a non-capturable
+      // page doesn't flood the events table.
+      const reason = String((err as Error)?.message || err);
+      if (lastFailureReason !== reason) {
+        lastFailureReason = reason;
+        buffer.push({
+          recording_id: state.recording_id,
+          user_id: state.user_id,
+          ts_ms: ev.ts_ms,
+          kind: "screenshot_failed",
+          data: { reason, original_kind: ev.kind },
+          _localId: uuid(),
+        });
+      }
     }
   }
 
   buffer.push(ev);
 }
 
-function shouldCaptureForKind(kind: string): boolean {
-  // High-signal events get a screenshot. Scrolls don't (too noisy).
-  return kind !== "scroll" && kind !== "tab_switch";
+const SCREENSHOT_MIN_GAP_MS = 600;
+let lastCaptureAt = 0;
+let lastFailureReason: string | null = null;
+
+function canCaptureNow(): boolean {
+  return Date.now() - lastCaptureAt >= SCREENSHOT_MIN_GAP_MS;
+}
+
+const SIGNIFICANT_KEYS = new Set(["Enter", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+
+function shouldCaptureForEvent(ev: CapturedEvent): boolean {
+  if (ev.kind === "scroll" || ev.kind === "tab_switch") return false;
+  // For keydown, only capture on significant keys or when a modifier is held.
+  // Plain character entry would otherwise cause a flood of capture attempts
+  // (Chrome rate-limits captureVisibleTab to ~2 calls per second).
+  if (ev.kind === "keydown") {
+    const data = ev.data as { key?: string; modifiers?: { alt: boolean; ctrl: boolean; meta: boolean; shift: boolean } };
+    const key = data.key ?? "";
+    const m = data.modifiers ?? { alt: false, ctrl: false, meta: false, shift: false };
+    if (m.ctrl || m.alt || m.meta) return true;
+    return SIGNIFICANT_KEYS.has(key);
+  }
+  return true;
 }
 
 // ---- Flush ----
@@ -375,6 +444,7 @@ async function onAudioDone(bytes: ArrayBuffer, mimeType: string): Promise<void> 
       .limit(1);
     recordingId = data?.[0]?.id;
   }
+  console.log("[scout] onAudioDone fired, bytes=" + (bytes?.byteLength ?? 0), recordingId);
   if (!userId || !recordingId) {
     console.warn("[scout] audio_done without recording context");
     await closeOffscreen();
@@ -384,14 +454,19 @@ async function onAudioDone(bytes: ArrayBuffer, mimeType: string): Promise<void> 
   // No audio captured (mic denied, no device, or recorder never started).
   // Skip the upload and let transcribe short-circuit on a null audio_path.
   if (!bytes || bytes.byteLength === 0 || !mimeType) {
+    console.log("[scout] audio_done with no bytes — going straight to transcribe", recordingId);
     await sb.from("recordings").update({ audio_path: null, status: "transcribing" }).eq("id", recordingId);
     broadcastRecordingChanged(recordingId, "transcribing");
     await closeOffscreen();
-    // Wait for transcribe so the 'ready' broadcast lands before we return —
-    // otherwise the popup briefly shows 'transcribing' even when there's no
-    // audio. Best-effort: if it errors, transcribe still flips status itself.
-    await triggerTranscribe(recordingId).catch((e) => console.warn("[scout] transcribe trigger failed", e));
-    broadcastRecordingChanged(recordingId, "ready");
+    try {
+      await triggerTranscribe(recordingId);
+      console.log("[scout] transcribe ok, broadcasting ready", recordingId);
+      broadcastRecordingChanged(recordingId, "ready");
+    } catch (e) {
+      console.warn("[scout] transcribe failed (no-audio path)", e);
+      broadcastRecordingChanged(recordingId, "failed");
+    }
+    audioDoneWaiters.get(recordingId)?.();
     return;
   }
 
@@ -405,6 +480,7 @@ async function onAudioDone(bytes: ArrayBuffer, mimeType: string): Promise<void> 
     await sb.from("recordings").update({ status: "failed" }).eq("id", recordingId);
     broadcastRecordingChanged(recordingId, "failed");
     await closeOffscreen();
+    audioDoneWaiters.get(recordingId)?.();
     return;
   }
 
@@ -412,9 +488,6 @@ async function onAudioDone(bytes: ArrayBuffer, mimeType: string): Promise<void> 
   broadcastRecordingChanged(recordingId, "transcribing");
   await closeOffscreen();
 
-  // Await transcribe so we can broadcast 'ready' (or 'failed') when it
-  // returns. Transcribe itself flips status in the DB; the broadcast just
-  // pokes any listening popup to refresh.
   try {
     await triggerTranscribe(recordingId);
     broadcastRecordingChanged(recordingId, "ready");
@@ -422,6 +495,7 @@ async function onAudioDone(bytes: ArrayBuffer, mimeType: string): Promise<void> 
     console.warn("[scout] transcribe failed", e);
     broadcastRecordingChanged(recordingId, "failed");
   }
+  audioDoneWaiters.get(recordingId)?.();
 }
 
 async function triggerTranscribe(recordingId: string): Promise<void> {
