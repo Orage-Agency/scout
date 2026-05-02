@@ -377,6 +377,15 @@ async function onAudioDone(bytes: ArrayBuffer, mimeType: string): Promise<void> 
     return;
   }
 
+  // No audio captured (mic denied, no device, or recorder never started).
+  // Skip the upload and let transcribe short-circuit on a null audio_path.
+  if (!bytes || bytes.byteLength === 0 || !mimeType) {
+    await sb.from("recordings").update({ audio_path: null, status: "transcribing" }).eq("id", recordingId);
+    await closeOffscreen();
+    triggerTranscribe(recordingId).catch((e) => console.warn("[scout] transcribe trigger failed", e));
+    return;
+  }
+
   const ext = mimeType.includes("ogg") ? "ogg" : "webm";
   const path = `${userId}/${recordingId}.${ext}`;
   const { error } = await sb.storage

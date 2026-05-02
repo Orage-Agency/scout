@@ -38,7 +38,17 @@ async function start(): Promise<void> {
 }
 
 async function stop(): Promise<void> {
-  if (!recorder) return;
+  if (!recorder) {
+    // No mic / permission denied / start() failed. Still notify the service
+    // worker so the recording can be finalized — otherwise it gets stuck at
+    // status='uploading' forever waiting for audio that will never arrive.
+    chrome.runtime.sendMessage({
+      type: "offscreen:audio_done",
+      bytes: new ArrayBuffer(0),
+      mimeType: "",
+    } satisfies RuntimeMessage);
+    return;
+  }
   await new Promise<void>((resolve) => {
     recorder!.onstop = () => resolve();
     recorder!.stop();
