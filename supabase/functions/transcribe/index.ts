@@ -2,7 +2,7 @@
 // prompt, store JSON segments in recordings.transcript. Triggered by the service
 // worker after audio upload. Per §10.4.1.
 
-import { callClaude } from "../_shared/anthropic.ts";
+import { callLLM, MODEL_TRANSCRIBE } from "../_shared/llm.ts";
 import { adminClient, corsHeaders, userClient } from "../_shared/supabase.ts";
 
 const SYSTEM = `Transcribe the provided audio recording. Return JSON only with this exact shape:
@@ -49,7 +49,8 @@ Deno.serve(async (req) => {
     const b64 = bufToBase64(new Uint8Array(ab));
     const mime = blob.type || "audio/webm";
 
-    const text = await callClaude({
+    const text = await callLLM({
+      model: MODEL_TRANSCRIBE,
       max_tokens: 8000,
       system: SYSTEM,
       temperature: 0,
@@ -57,15 +58,13 @@ Deno.serve(async (req) => {
         {
           role: "user",
           content: [
-            // Send audio as a document block. If the model rejects the type for
-            // a given audio MIME, we fall back to an empty transcript.
             { type: "document", source: { type: "base64", media_type: mime, data: b64 } },
             { type: "text", text: "Transcribe the audio. JSON only." },
           ],
         },
       ],
     }).catch((e) => {
-      console.warn("[transcribe] claude failed", e);
+      console.warn("[transcribe] llm failed", e);
       return "";
     });
 

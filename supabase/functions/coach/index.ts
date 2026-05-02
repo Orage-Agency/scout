@@ -1,7 +1,7 @@
 // /coach — given a 30s window of events + a transcript tail, decide whether
 // to ask the user a clarifying question. Default to silence. Per §9.
 
-import { callClaude } from "../_shared/anthropic.ts";
+import { callLLM, MODEL_COACH } from "../_shared/llm.ts";
 import { corsHeaders, userClient } from "../_shared/supabase.ts";
 
 const SYSTEM = `You are a quiet observer watching a person record a workflow.
@@ -52,7 +52,8 @@ Deno.serve(async (req) => {
 Recent narration: ${body.transcript_tail ?? ""}
 Asks so far this recording: ${body.ask_count ?? 0}`;
 
-    const text = await callClaude({
+    const text = await callLLM({
+      model: MODEL_COACH,
       max_tokens: 200,
       system: SYSTEM,
       temperature: 0.3,

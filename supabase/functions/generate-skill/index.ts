@@ -1,7 +1,7 @@
 // /generate-skill — fetch events + transcript + sampled screenshots, ask Claude
 // to produce a SKILL.md, persist it. Per §10.
 
-import { callClaude } from "../_shared/anthropic.ts";
+import { callLLM, MODEL_SKILL } from "../_shared/llm.ts";
 import { adminClient, corsHeaders, userClient } from "../_shared/supabase.ts";
 
 const SYSTEM = `You will produce a SKILL.md file from a recorded human workflow.
@@ -118,7 +118,8 @@ SCREENSHOTS: ${images.length} attached as image blocks below.`;
     for (const img of images) content.push(img);
 
     // deno-lint-ignore no-explicit-any
-    const md = await callClaude({
+    const md = await callLLM({
+      model: MODEL_SKILL,
       max_tokens: 8000,
       system: SYSTEM,
       temperature: 0.4,
