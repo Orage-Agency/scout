@@ -267,11 +267,15 @@ function recordingView(s: RecordingSessionState): HTMLElement {
   const d = document.createElement("div");
   d.className = "flex-1 px-4 py-6 flex flex-col gap-3";
   const startedMs = s.started_at;
+  const audioBadge = s.audio_supported
+    ? `<span class="text-[10px] uppercase tracking-wide text-success">audio on</span>`
+    : `<span class="text-[10px] uppercase tracking-wide text-warning" title="Mic denied or unavailable. Recording continues without narration.">audio off</span>`;
   d.innerHTML = `
     <div class="card">
       <div class="flex items-center gap-2">
         <span class="record-dot"></span>
         <span class="text-sm font-medium">Recording</span>
+        ${audioBadge}
         <span id="t" class="ml-auto font-mono tabular-nums text-sm">00:00</span>
       </div>
       <div id="evcount" class="text-xs text-muted mt-2">0 events captured</div>
@@ -296,8 +300,20 @@ function recordingView(s: RecordingSessionState): HTMLElement {
     render();
   };
   d.querySelector<HTMLButtonElement>("#stop")!.onclick = async () => {
+    const recordingId = s.recording_id;
     await chrome.runtime.sendMessage({ type: "popup:stop_recording" } satisfies RuntimeMessage);
-    view = { kind: "idle", tab: "library" };
+    // Pull the freshly-updated recording row (status is now 'uploading' or
+    // later) and drop straight into the skill view. Generate Skill is
+    // available immediately even before transcribe finishes — events are
+    // already flushed.
+    const sb = getSupabase();
+    const { data: rec } = await sb.from("recordings").select("*").eq("id", recordingId).single();
+    if (rec) {
+      view = { kind: "skill", recording: rec as RecordingRow, skill: null };
+    } else {
+      // Edge case: row vanished. Fall back to library so the user has a path.
+      view = { kind: "idle", tab: "library" };
+    }
     render();
   };
   return d;
@@ -360,11 +376,31 @@ function skillView(rec: RecordingRow, skill: SkillRow | null): HTMLElement {
   };
   d.appendChild(actions);
 
+  // Split YAML frontmatter from the markdown body so marked() doesn't mangle
+  // the `---\nname: ...\n---` block into a horizontal-rule + heading. We
+  // render the frontmatter as a small metadata strip above the prose.
+  const { frontmatter, body } = splitFrontmatter(skill.body_md);
+  if (frontmatter) {
+    const fm = document.createElement("div");
+    fm.className = "card mb-3 text-xs font-mono leading-relaxed text-muted whitespace-pre";
+    fm.textContent = frontmatter;
+    d.appendChild(fm);
+  }
+
   const md = document.createElement("article");
   md.className = "skill-md text-primary";
-  md.innerHTML = marked.parse(skill.body_md, { async: false }) as string;
+  md.innerHTML = marked.parse(body, { async: false }) as string;
   d.appendChild(md);
   return d;
+}
+
+// Strip the leading YAML frontmatter (a `---` ... `---` block) and return the
+// raw frontmatter text + the remaining body. If no frontmatter is present,
+// returns an empty frontmatter string and the original input as body.
+function splitFrontmatter(md: string): { frontmatter: string; body: string } {
+  const m = md.match(/^---\n([\s\S]*?)\n---\n?/);
+  if (!m) return { frontmatter: "", body: md };
+  return { frontmatter: m[1].trim(), body: md.slice(m[0].length) };
 }
 
 async function generate(recordingId: string, container: HTMLElement, extra?: string): Promise<void> {
@@ -421,3 +457,45 @@ sb.auth.onAuthStateChange((_evt, sess) => {
     render();
   }
 });
+
+// Listen for live updates pushed by the service worker so the popup never
+// shows a stale view (recording status, audio availability, etc).
+chrome.runtime.onMessage.addListener((msg: RuntimeMessage) => {
+  if (msg.type === "popup:state") {
+    // Audio support or pause state changed mid-recording. Only refresh if
+    // we're actually showing the recording view for that session.
+    if (view.kind === "recording" && msg.state && msg.state.recording_id === view.state.recording_id) {
+      view = { kind: "recording", state: msg.state };
+      render();
+    }
+    return;
+  }
+  if (msg.type === "popup:recording_changed") {
+    // Skill view of the affected recording — pull a fresh row so status,
+    // duration, and any newly-attached skill all reflect reality.
+    if (view.kind === "skill" && view.recording.id === msg.recording_id) {
+      void refreshSkillView(msg.recording_id);
+      return;
+    }
+    // Library tab — re-render to pull fresh statuses.
+    if (view.kind === "idle" && view.tab === "library") {
+      render();
+    }
+  }
+});
+
+async function refreshSkillView(recordingId: string): Promise<void> {
+  const sb2 = getSupabase();
+  const { data: rec } = await sb2
+    .from("recordings")
+    .select("*, skills(id,recording_id,user_id,version,title,body_md,prompt_used,created_at)")
+    .eq("id", recordingId)
+    .single();
+  if (!rec) return;
+  const skills = (rec as RecordingRow & { skills?: SkillRow[] }).skills ?? [];
+  const newest = skills.length
+    ? [...skills].sort((a, b) => b.version - a.version)[0]
+    : null;
+  view = { kind: "skill", recording: rec as RecordingRow, skill: newest };
+  render();
+}

@@ -5,6 +5,7 @@
 import { getSupabase, functionUrl } from "../lib/supabase";
 import type {
   CapturedEvent,
+  RecordingRow,
   RecordingSessionState,
   RuntimeMessage,
   CoachAsk,
@@ -61,6 +62,8 @@ async function startRecording(): Promise<RecordingSessionState | null> {
   if (error) {
     console.error("[scout] failed to insert recording", error);
     // We still let the user record — events queue locally and flush later.
+  } else {
+    broadcastRecordingChanged(recordingId, "recording");
   }
 
   const state: RecordingSessionState = {
@@ -108,6 +111,7 @@ async function stopRecording(): Promise<void> {
       duration_ms: durationMs,
     })
     .eq("id", state.recording_id);
+  broadcastRecordingChanged(state.recording_id, "uploading");
 
   await saveSession(null);
   await chrome.runtime.sendMessage({ type: "popup:state", state: null }).catch(() => {});
@@ -381,8 +385,13 @@ async function onAudioDone(bytes: ArrayBuffer, mimeType: string): Promise<void> 
   // Skip the upload and let transcribe short-circuit on a null audio_path.
   if (!bytes || bytes.byteLength === 0 || !mimeType) {
     await sb.from("recordings").update({ audio_path: null, status: "transcribing" }).eq("id", recordingId);
+    broadcastRecordingChanged(recordingId, "transcribing");
     await closeOffscreen();
-    triggerTranscribe(recordingId).catch((e) => console.warn("[scout] transcribe trigger failed", e));
+    // Wait for transcribe so the 'ready' broadcast lands before we return —
+    // otherwise the popup briefly shows 'transcribing' even when there's no
+    // audio. Best-effort: if it errors, transcribe still flips status itself.
+    await triggerTranscribe(recordingId).catch((e) => console.warn("[scout] transcribe trigger failed", e));
+    broadcastRecordingChanged(recordingId, "ready");
     return;
   }
 
@@ -394,26 +403,37 @@ async function onAudioDone(bytes: ArrayBuffer, mimeType: string): Promise<void> 
   if (error) {
     console.error("[scout] audio upload failed", error);
     await sb.from("recordings").update({ status: "failed" }).eq("id", recordingId);
+    broadcastRecordingChanged(recordingId, "failed");
     await closeOffscreen();
     return;
   }
 
   await sb.from("recordings").update({ audio_path: path, status: "transcribing" }).eq("id", recordingId);
+  broadcastRecordingChanged(recordingId, "transcribing");
   await closeOffscreen();
 
-  // Kick off transcription in the background. Best-effort; popup polls status.
-  triggerTranscribe(recordingId).catch((e) => console.warn("[scout] transcribe trigger failed", e));
+  // Await transcribe so we can broadcast 'ready' (or 'failed') when it
+  // returns. Transcribe itself flips status in the DB; the broadcast just
+  // pokes any listening popup to refresh.
+  try {
+    await triggerTranscribe(recordingId);
+    broadcastRecordingChanged(recordingId, "ready");
+  } catch (e) {
+    console.warn("[scout] transcribe failed", e);
+    broadcastRecordingChanged(recordingId, "failed");
+  }
 }
 
 async function triggerTranscribe(recordingId: string): Promise<void> {
   const sb = getSupabase();
   const { data: sess } = await sb.auth.getSession();
-  if (!sess.session) return;
-  await fetch(functionUrl("transcribe"), {
+  if (!sess.session) throw new Error("not authenticated");
+  const res = await fetch(functionUrl("transcribe"), {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${sess.session.access_token}` },
     body: JSON.stringify({ recording_id: recordingId }),
   });
+  if (!res.ok) throw new Error(`transcribe ${res.status}: ${await res.text()}`);
 }
 
 // ---- Tab lifecycle (cross-tab capture) ----
@@ -470,6 +490,16 @@ async function broadcastToTabs(msg: RuntimeMessage): Promise<void> {
   );
 }
 
+// Broadcast a recording status change to anything listening (popup, library
+// tab cards). Best-effort — popup may be closed.
+function broadcastRecordingChanged(recordingId: string, status: RecordingRow["status"]): void {
+  chrome.runtime.sendMessage({
+    type: "popup:recording_changed",
+    recording_id: recordingId,
+    status,
+  } satisfies RuntimeMessage).catch(() => {});
+}
+
 chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse) => {
   (async () => {
     try {
@@ -516,6 +546,8 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse)
           if (s) {
             s.audio_supported = false;
             await saveSession(s);
+            // Tell the popup so it can show "audio: off" in the recording UI.
+            chrome.runtime.sendMessage({ type: "popup:state", state: s } satisfies RuntimeMessage).catch(() => {});
           }
           sendResponse({ ok: true });
           break;

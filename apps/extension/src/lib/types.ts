@@ -94,6 +94,7 @@ export type RuntimeMessage =
   | { type: "popup:resume_recording" }
   | { type: "popup:get_state" }
   | { type: "popup:state"; state: RecordingSessionState | null }
+  | { type: "popup:recording_changed"; recording_id: string; status: RecordingRow["status"] }
   | { type: "content:event"; event: CapturedEvent }
   | { type: "content:show_toast"; ask: string }
   | { type: "content:show_control_bar" }

@@ -129,43 +129,18 @@ test("end-to-end: sign in, record, generate skill", async () => {
   await work.click("[data-testid=done]");
   await work.waitForTimeout(1500);
 
-  // 9. Bring popup forward and click Stop. The popup transitions to the
-  // Library tab (not the skill view directly).
+  // 9. Bring popup forward and click Stop. With the v0.1.1 fixes the popup
+  // transitions directly to the skill view of the just-stopped recording —
+  // no library round-trip required.
   await popup.bringToFront();
   await popup.locator("#stop").click();
-  console.log(`[e2e] recording stopped, awaiting transcribe → ready`);
-
-  // 10. Poll Supabase for the recording to reach status='ready'. The service
-  // worker uploads audio, calls transcribe, and updates status. With no audio
-  // captured (no mic in headless Chromium), transcribe returns immediately
-  // with an empty transcript.
-  let ready = false;
-  for (let i = 0; i < 60 && !ready; i++) {
-    const { data: recs } = await admin
-      .from("recordings")
-      .select("id,status")
-      .eq("user_id", userId)
-      .order("started_at", { ascending: false })
-      .limit(1);
-    const rec = recs?.[0];
-    if (rec) console.log(`[e2e] recording ${rec.id} status=${rec.status}`);
-    if (rec?.status === "ready") { ready = true; break; }
-    if (rec?.status === "failed") throw new Error("recording failed");
-    await new Promise((r) => setTimeout(r, 2000));
-  }
-  if (!ready) throw new Error("recording never reached status=ready");
-
-  // 11. Reload the popup so the library refreshes with the ready status,
-  // then click the top card to open the skill view.
-  await popup.reload();
-  // Click the Library tab if not already there.
-  const libBtn = popup.getByRole("button", { name: /^library$/i });
-  if (await libBtn.isVisible().catch(() => false)) await libBtn.click();
-  await popup.locator(".card, button.card").first().click();
-
   await expect(popup.locator("#gen")).toBeVisible({ timeout: 15_000 });
-  console.log(`[e2e] requesting skill generation`);
+  console.log(`[e2e] recording stopped, skill view open`);
+
+  // 10. Click Generate Skill. Generate-skill doesn't require status='ready';
+  // events are flushed before status is updated by stopRecording().
   await popup.locator("#gen").click();
+  console.log(`[e2e] requesting skill generation`);
 
   // 11. Wait for the skill body to render. SKILL.md frontmatter starts with
   // "name:" — the marked() output renders the YAML as text in a <pre> or
