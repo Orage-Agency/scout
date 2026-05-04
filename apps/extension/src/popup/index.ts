@@ -321,6 +321,7 @@ function recordingView(s: RecordingSessionState): HTMLElement {
   const audioBadge = s.audio_supported
     ? `<span class="text-[10px] uppercase tracking-wide text-success">audio on</span>`
     : `<span class="text-[10px] uppercase tracking-wide text-warning" title="Mic denied or unavailable. Recording continues without narration.">audio off</span>`;
+  const tabTitle = s.active_tab_title?.trim() || (s.active_tab_url ? new URL(s.active_tab_url).hostname : "—");
   d.innerHTML = `
     <div class="card">
       <div class="flex items-center gap-2">
@@ -329,7 +330,8 @@ function recordingView(s: RecordingSessionState): HTMLElement {
         ${audioBadge}
         <span id="t" class="ml-auto font-mono tabular-nums text-sm">00:00</span>
       </div>
-      <div id="evcount" class="text-xs text-muted mt-2">${s.event_count ?? 0} events · ${s.shot_count ?? 0} screenshots</div>
+      <div id="tabname" class="text-xs text-muted mt-2 truncate" title="${escapeHtml(tabTitle)}">on ${escapeHtml(tabTitle)}</div>
+      <div id="evcount" class="text-xs text-muted mt-1">${s.event_count ?? 0} events · ${s.shot_count ?? 0} screenshots</div>
     </div>
     <div class="flex gap-2">
       <button id="pause" class="btn flex-1">${s.is_paused ? "Resume" : "Pause"}</button>

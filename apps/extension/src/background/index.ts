@@ -66,6 +66,7 @@ async function startRecording(): Promise<RecordingSessionState | null> {
     broadcastRecordingChanged(recordingId, "recording");
   }
 
+  const [activeAtStart] = await chrome.tabs.query({ active: true, currentWindow: true });
   const state: RecordingSessionState = {
     recording_id: recordingId,
     user_id: auth.user.id,
@@ -77,6 +78,8 @@ async function startRecording(): Promise<RecordingSessionState | null> {
     last_ask_at: 0,
     event_count: 0,
     shot_count: 0,
+    active_tab_title: activeAtStart?.title ?? null,
+    active_tab_url: activeAtStart?.url ?? null,
   };
   await saveSession(state);
 
@@ -92,12 +95,16 @@ async function startRecording(): Promise<RecordingSessionState | null> {
 
   startTimers();
 
+  // Inject the content script into pre-existing tabs — Chrome only auto-injects
+  // on page load, so tabs that were already open when recording started won't
+  // capture clicks/keys/etc. without explicit injection. Per brief §11.2.1.
+  await injectContentIntoOpenTabs();
+
   // Capture the initial state of the active tab so even a session with zero
   // user input still yields a visual anchor for the LLM.
-  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (activeTab?.id != null) {
-    await captureTabAndQueue(activeTab.id, activeTab.windowId ?? null, "navigation", {
-      to_url: activeTab.url ?? null,
+  if (activeAtStart?.id != null) {
+    await captureTabAndQueue(activeAtStart.id, activeAtStart.windowId ?? null, "navigation", {
+      to_url: activeAtStart.url ?? null,
       initial: true,
     });
   }
@@ -601,9 +608,32 @@ chrome.tabs.onActivated.addListener(async (info) => {
   await captureTabAndQueue(info.tabId, tab?.windowId ?? null, "tab_switch", {
     to_tab_id: info.tabId,
     to_tab_url: tab?.url ?? null,
+    to_tab_title: tab?.title ?? null,
   });
+  // Update the popup's "current tab" indicator.
+  state.active_tab_title = tab?.title ?? null;
+  state.active_tab_url = tab?.url ?? null;
+  await saveSession(state);
+  chrome.runtime
+    .sendMessage({ type: "popup:state", state } satisfies RuntimeMessage)
+    .catch(() => {});
   // Make sure the new tab has the control bar.
   if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: "content:show_control_bar" } satisfies RuntimeMessage).catch(() => {});
+});
+
+// Track tab title/url updates while it's the active tab, so the popup reflects
+// SPA route changes inside Gmail / a CRM where the tab itself doesn't change.
+chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
+  if (!tab.active) return;
+  if (!changeInfo.title && !changeInfo.url) return;
+  const state = await loadSession();
+  if (!state) return;
+  state.active_tab_title = tab.title ?? state.active_tab_title;
+  state.active_tab_url = tab.url ?? state.active_tab_url;
+  await saveSession(state);
+  chrome.runtime
+    .sendMessage({ type: "popup:state", state } satisfies RuntimeMessage)
+    .catch(() => {});
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
@@ -635,6 +665,40 @@ chrome.webNavigation?.onCompleted?.addListener(async (details) => {
 });
 
 // ---- Message router ----
+
+// Programmatically inject the content script into every regular tab so
+// recordings capture clicks/keys/paste even on pages that loaded before the
+// user hit Record. Chrome's manifest content_scripts only auto-inject on
+// page load, never retroactively. The content script self-guards against
+// double-injection via a window flag.
+async function injectContentIntoOpenTabs(): Promise<void> {
+  // The bundled content script's filename has a Vite content hash that changes
+  // every build, so we read the path from the runtime manifest instead of
+  // hardcoding it.
+  const manifest = chrome.runtime.getManifest();
+  const files = manifest.content_scripts?.[0]?.js ?? [];
+  if (!files.length) return;
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(
+    tabs.map(async (t) => {
+      if (!t.id || !t.url) return;
+      // chrome.scripting refuses chrome://, chrome-extension://, edge://,
+      // about:, view-source:, and the webstore — silently skip those.
+      if (!/^(https?|file):/i.test(t.url)) return;
+      if (/^https?:\/\/(chromewebstore\.google\.com|chrome\.google\.com\/webstore)/i.test(t.url)) return;
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: t.id },
+          files,
+        });
+      } catch (err) {
+        // Some pages refuse for reasons we can't predict (e.g., file:// without
+        // user permission) — log once and move on, don't fail the whole start.
+        console.warn("[scout] content script injection skipped", { tab: t.url, err: String(err) });
+      }
+    }),
+  );
+}
 
 async function broadcastToTabs(msg: RuntimeMessage): Promise<void> {
   const tabs = await chrome.tabs.query({});

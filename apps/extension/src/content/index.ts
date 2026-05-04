@@ -117,6 +117,13 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     return !!el.closest?.(`#${BAR_ID}, #${TOAST_ID}`);
   }
 
+  // The page might re-render and wipe our bar (Gmail, Notion, any SPA route
+  // change). When that happens, ensureControlBar() needs to be called again.
+  // We track whether the user is currently in a recording so the observer
+  // knows whether to re-attach.
+  let recordingActive = false;
+  let barObserver: MutationObserver | null = null;
+
   function ensureControlBar(): HTMLElement {
     let bar = document.getElementById(BAR_ID);
     if (bar) return bar;
@@ -199,6 +206,31 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
 
   function removeControlBar(): void {
     document.getElementById(BAR_ID)?.remove();
+    barObserver?.disconnect();
+    barObserver = null;
+  }
+
+  // Watch the body for re-renders. If our bar gets removed and we're still
+  // recording, re-create it. document.body itself may be replaced (Gmail
+  // does this on inbox -> conversation transitions), so we observe at the
+  // documentElement level and re-bind to body when it changes.
+  function startBarObserver(): void {
+    if (barObserver) return;
+    let lastBody = document.body;
+    barObserver = new MutationObserver(() => {
+      if (!recordingActive) return;
+      // Body was replaced wholesale.
+      if (document.body !== lastBody) {
+        lastBody = document.body;
+      }
+      if (!document.getElementById(BAR_ID) && document.body) {
+        ensureControlBar();
+      }
+    });
+    barObserver.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
   }
 
   // ---- Coaching toast ----
@@ -266,16 +298,19 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
       return true;
     }
     if (msg.type === "content:show_control_bar") {
+      recordingActive = true;
       const bar = ensureControlBar();
+      startBarObserver();
       // Ask the worker for the start time so the timer is correct.
       chrome.runtime.sendMessage({ type: "popup:get_state" } satisfies RuntimeMessage, (resp) => {
         const started = resp?.state?.started_at;
-        if (started) bar.setAttribute("data-started", String(started));
+        if (started) bar.setAttribute("data-started", String(resp.state.started_at));
       });
       sendResponse({ ok: true });
       return true;
     }
     if (msg.type === "content:hide_control_bar") {
+      recordingActive = false;
       removeControlBar();
       sendResponse({ ok: true });
       return true;
@@ -286,8 +321,10 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
   // On load, if a session already exists (page reloaded mid-recording), show the bar.
   chrome.runtime.sendMessage({ type: "popup:get_state" } satisfies RuntimeMessage, (resp) => {
     if (resp?.state) {
+      recordingActive = true;
       const bar = ensureControlBar();
       bar.setAttribute("data-started", String(resp.state.started_at));
+      startBarObserver();
     }
   });
 })();

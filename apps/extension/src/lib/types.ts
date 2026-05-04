@@ -47,6 +47,8 @@ export interface RecordingSessionState {
   last_ask_at: number; // epoch ms; 0 if no ask yet
   event_count: number; // live counter for popup display
   shot_count: number;  // live counter of events with a screenshot attached
+  active_tab_title?: string | null;
+  active_tab_url?: string | null;
 }
 
 export interface CoachAsk {
