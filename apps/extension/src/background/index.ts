@@ -538,7 +538,7 @@ async function sendToOffscreen(msg: RuntimeMessage): Promise<void> {
 
 // ---- Audio finalization ----
 
-async function onAudioDone(bytes: ArrayBuffer, mimeType: string): Promise<void> {
+async function onAudioDone(bytesB64: string, byteLength: number, mimeType: string): Promise<void> {
   const state = await loadSession();
   // The session might already be cleared (stop happened seconds ago) — still upload.
   const sb = getSupabase();
@@ -556,12 +556,16 @@ async function onAudioDone(bytes: ArrayBuffer, mimeType: string): Promise<void> 
       .limit(1);
     recordingId = data?.[0]?.id;
   }
-  console.log("[scout] onAudioDone fired, bytes=" + (bytes?.byteLength ?? 0), recordingId);
+  console.log("[scout] onAudioDone fired, bytes=" + byteLength, recordingId);
   if (!userId || !recordingId) {
     console.warn("[scout] audio_done without recording context");
     await closeOffscreen();
     return;
   }
+
+  // Decode the base64 payload back to bytes for upload. Empty string + 0 length
+  // means no audio (mic denied or recorder never produced data).
+  const bytes = bytesB64 ? base64ToUint8(bytesB64) : null;
 
   // No audio captured (mic denied, no device, or recorder never started).
   // Skip the upload and let transcribe short-circuit on a null audio_path.
@@ -586,7 +590,7 @@ async function onAudioDone(bytes: ArrayBuffer, mimeType: string): Promise<void> 
   const path = `${userId}/${recordingId}.${ext}`;
   const { error } = await sb.storage
     .from("audio")
-    .upload(path, new Blob([bytes], { type: mimeType }), { contentType: mimeType, upsert: true });
+    .upload(path, new Blob([bytes as BlobPart], { type: mimeType }), { contentType: mimeType, upsert: true });
   if (error) {
     console.error("[scout] audio upload failed", error);
     await sb.from("recordings").update({ status: "failed" }).eq("id", recordingId);
@@ -608,6 +612,13 @@ async function onAudioDone(bytes: ArrayBuffer, mimeType: string): Promise<void> 
     broadcastRecordingChanged(recordingId, "failed");
   }
   audioDoneWaiters.get(recordingId)?.();
+}
+
+function base64ToUint8(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 async function triggerTranscribe(recordingId: string): Promise<void> {
@@ -776,7 +787,7 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse)
           break;
         }
         case "offscreen:audio_done": {
-          await onAudioDone(msg.bytes, msg.mimeType);
+          await onAudioDone(msg.bytesB64, msg.byteLength, msg.mimeType);
           sendResponse({ ok: true });
           break;
         }

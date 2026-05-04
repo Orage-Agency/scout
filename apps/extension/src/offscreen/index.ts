@@ -44,7 +44,8 @@ async function stop(): Promise<void> {
     // status='uploading' forever waiting for audio that will never arrive.
     chrome.runtime.sendMessage({
       type: "offscreen:audio_done",
-      bytes: new ArrayBuffer(0),
+      bytesB64: "",
+      byteLength: 0,
       mimeType: "",
     } satisfies RuntimeMessage);
     return;
@@ -55,15 +56,30 @@ async function stop(): Promise<void> {
   });
   stream?.getTracks().forEach((t) => t.stop());
   const blob = new Blob(chunks, { type: chosenMime });
-  const bytes = await blob.arrayBuffer();
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  // chrome.runtime.sendMessage between offscreen and the service worker
+  // strips ArrayBuffer to {} in some Chrome builds. Base64 the payload so
+  // it survives the IPC boundary intact.
+  const bytesB64 = uint8ToBase64(bytes);
   chrome.runtime.sendMessage({
     type: "offscreen:audio_done",
-    bytes,
+    bytesB64,
+    byteLength: bytes.byteLength,
     mimeType: chosenMime,
   } satisfies RuntimeMessage);
   recorder = null;
   stream = null;
   chunks = [];
+}
+
+function uint8ToBase64(buf: Uint8Array): string {
+  // Chunked btoa to avoid call-stack blowups on multi-MB payloads.
+  const CHUNK = 0x8000;
+  let s = "";
+  for (let i = 0; i < buf.length; i += CHUNK) {
+    s += String.fromCharCode.apply(null, Array.from(buf.subarray(i, i + CHUNK)));
+  }
+  return btoa(s);
 }
 
 chrome.runtime.onMessage.addListener((msg: RuntimeMessage, _sender, sendResponse) => {

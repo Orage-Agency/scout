@@ -107,7 +107,7 @@ export type RuntimeMessage =
   | { type: "offscreen:start_audio" }
   | { type: "offscreen:stop_audio" }
   | { type: "offscreen:audio_chunk"; chunk: ArrayBuffer; mimeType: string }
-  | { type: "offscreen:audio_done"; bytes: ArrayBuffer; mimeType: string }
+  | { type: "offscreen:audio_done"; bytesB64: string; byteLength: number; mimeType: string }
   | { type: "offscreen:audio_error"; error: string }
   | { type: "popup:generate_skill"; recording_id: string; extra?: string }
   | { type: "popup:skill_ready"; skill: SkillRow }
