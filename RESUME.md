@@ -25,17 +25,24 @@
 - **GitHub remote**: `https://github.com/Orage-Agency/scout` (private), `main` + tag `v0.1.0` pushed.
 - **Local git identity**: `George Moffat <georgemoffat@orage.agency>` set repo-locally.
 
-## One thing remaining: smoke test
+## How to run it on real sites
 
-The native folder picker on `chrome://extensions` is OS-level, so this can't be done from Playwright/MCP. Steps:
+Easiest path — `scripts/dev-chrome.ps1` spawns a dedicated Chrome with the extension preloaded into an isolated profile (`C:\Users\georg\scout-chrome-profile`):
 
-1. Open `chrome://extensions/` in your everyday Chrome
-2. Toggle Developer mode (top-right)
-3. Click **Load unpacked** → pick `C:\Users\georg\scout\apps\extension\dist`
-4. Click the Scout icon, sign in with magic link
-5. Click Record on any page → do a 30s workflow → Stop → wait for status `ready` → Generate Skill
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Users\georg\scout\scripts\dev-chrome.ps1
+```
 
-If anything fails, paste the popup's console logs (right-click → Inspect popup) and the failing recording's `id` from Supabase and we'll fix in the next session.
+Or load it into your everyday Chrome via `chrome://extensions` → Developer mode → **Load unpacked** → pick `C:\Users\georg\scout\apps\extension\dist`.
+
+Then:
+1. Click the Scout icon (pin it from the puzzle menu first)
+2. Enter your email → check inbox → paste the 6-digit code
+3. Open the page you want to demo (Gmail, your CRM, etc.) — the popup warns you if it's a Chrome system page that blocks recording
+4. Click Record → narrate while you work → Stop
+5. Generate Skill → SKILL.md renders in the popup; copy or save .md
+
+The popup now shows **`N events · M screenshots`** live so you can see capture happening. If counts stay at 0 after clicking, the active tab is likely a `chrome://` page — switch to a normal site and start over.
 
 ## Files of interest
 

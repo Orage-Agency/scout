@@ -45,6 +45,8 @@ export interface RecordingSessionState {
   audio_supported: boolean;
   ask_count: number;
   last_ask_at: number; // epoch ms; 0 if no ask yet
+  event_count: number; // live counter for popup display
+  shot_count: number;  // live counter of events with a screenshot attached
 }
 
 export interface CoachAsk {
@@ -94,6 +96,7 @@ export type RuntimeMessage =
   | { type: "popup:resume_recording" }
   | { type: "popup:get_state" }
   | { type: "popup:state"; state: RecordingSessionState | null }
+  | { type: "popup:counts"; event_count: number; shot_count: number }
   | { type: "popup:recording_changed"; recording_id: string; status: RecordingRow["status"] }
   | { type: "content:event"; event: CapturedEvent }
   | { type: "content:show_toast"; ask: string }

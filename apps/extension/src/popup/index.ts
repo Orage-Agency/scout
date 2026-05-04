@@ -194,15 +194,31 @@ function recordTab(): HTMLElement {
   d.innerHTML = `
     <button id="rec" class="w-24 h-24 rounded-full bg-accent hover:bg-accent-quiet transition-colors flex items-center justify-center text-primary text-3xl">●</button>
     <div class="text-sm font-medium">Start Recording</div>
-    <p class="text-muted text-xs leading-relaxed">Press to begin. We'll capture your screen actions and your voice while you narrate.</p>
+    <p class="text-muted text-xs leading-relaxed">Press to begin. We'll capture clicks, key presses, screenshots, and your voice while you narrate.</p>
+    <p id="warn" class="text-warning text-xs leading-snug hidden"></p>
   `;
+  const warnEl = d.querySelector<HTMLParagraphElement>("#warn")!;
+  // Show a hint if the active tab is one Chrome blocks content scripts on —
+  // recording technically still runs (audio + tab events) but no clicks/keys
+  // are captured, which looks like "nothing's happening".
+  void chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+    if (!tab?.url) return;
+    const blocked = /^(chrome|chrome-extension|edge|about|view-source):/i.test(tab.url)
+      || /^https:\/\/chrome\.google\.com\/webstore/i.test(tab.url)
+      || /^https:\/\/chromewebstore\.google\.com/i.test(tab.url);
+    if (blocked) {
+      warnEl.textContent = "Chrome blocks recording on this page. Open a regular site (gmail.com, your CRM, etc.) first.";
+      warnEl.classList.remove("hidden");
+    }
+  });
   d.querySelector<HTMLButtonElement>("#rec")!.onclick = async () => {
     const resp = await chrome.runtime.sendMessage({ type: "popup:start_recording" } satisfies RuntimeMessage);
     if (resp?.state) {
       view = { kind: "recording", state: resp.state };
       render();
     } else {
-      alert("Could not start recording. Are you signed in?");
+      warnEl.textContent = "Could not start recording. Are you signed in?";
+      warnEl.classList.remove("hidden");
     }
   };
   return d;
@@ -313,7 +329,7 @@ function recordingView(s: RecordingSessionState): HTMLElement {
         ${audioBadge}
         <span id="t" class="ml-auto font-mono tabular-nums text-sm">00:00</span>
       </div>
-      <div id="evcount" class="text-xs text-muted mt-2">0 events captured</div>
+      <div id="evcount" class="text-xs text-muted mt-2">${s.event_count ?? 0} events · ${s.shot_count ?? 0} screenshots</div>
     </div>
     <div class="flex gap-2">
       <button id="pause" class="btn flex-1">${s.is_paused ? "Resume" : "Pause"}</button>
@@ -515,6 +531,17 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage) => {
     if (view.kind === "recording" && msg.state && msg.state.recording_id === view.state.recording_id) {
       view = { kind: "recording", state: msg.state };
       render();
+    }
+    return;
+  }
+  if (msg.type === "popup:counts") {
+    // Update counters in place without a full re-render so the timer doesn't
+    // reset every time an event lands.
+    if (view.kind === "recording") {
+      view.state.event_count = msg.event_count;
+      view.state.shot_count = msg.shot_count;
+      const el = document.getElementById("evcount");
+      if (el) el.textContent = `${msg.event_count} events · ${msg.shot_count} screenshots`;
     }
     return;
   }

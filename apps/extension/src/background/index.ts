@@ -75,6 +75,8 @@ async function startRecording(): Promise<RecordingSessionState | null> {
     audio_supported: true,
     ask_count: 0,
     last_ask_at: 0,
+    event_count: 0,
+    shot_count: 0,
   };
   await saveSession(state);
 
@@ -89,6 +91,17 @@ async function startRecording(): Promise<RecordingSessionState | null> {
   lastFailureReason = null;
 
   startTimers();
+
+  // Capture the initial state of the active tab so even a session with zero
+  // user input still yields a visual anchor for the LLM.
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (activeTab?.id != null) {
+    await captureTabAndQueue(activeTab.id, activeTab.windowId ?? null, "navigation", {
+      to_url: activeTab.url ?? null,
+      initial: true,
+    });
+  }
+
   console.log("[scout] recording started", recordingId);
   return state;
 }
@@ -231,27 +244,96 @@ async function onContentEvent(ev: CapturedEvent, sender: chrome.runtime.MessageS
       const reason = String((err as Error)?.message || err);
       if (lastFailureReason !== reason) {
         lastFailureReason = reason;
-        buffer.push({
+        const failEv: CapturedEvent = {
           recording_id: state.recording_id,
           user_id: state.user_id,
           ts_ms: ev.ts_ms,
           kind: "screenshot_failed",
           data: { reason, original_kind: ev.kind },
           _localId: uuid(),
-        });
+        };
+        buffer.push(failEv);
+        await bumpCounters(failEv);
       }
     }
   }
 
   buffer.push(ev);
+  await bumpCounters(ev);
 }
 
-const SCREENSHOT_MIN_GAP_MS = 600;
+// Chrome rate-limits captureVisibleTab to ~2/sec (MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND).
+// 500ms is the floor; going lower returns "MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota".
+const SCREENSHOT_MIN_GAP_MS = 500;
 let lastCaptureAt = 0;
 let lastFailureReason: string | null = null;
 
 function canCaptureNow(): boolean {
   return Date.now() - lastCaptureAt >= SCREENSHOT_MIN_GAP_MS;
+}
+
+// Capture the visible area of a specific tab and append an event with the
+// screenshot attached. Used for non-content-driven moments — recording start,
+// tab switches, and navigations — that wouldn't otherwise carry visual context.
+async function captureTabAndQueue(
+  tabId: number,
+  windowId: number | null,
+  kind: CapturedEvent["kind"],
+  data: Record<string, unknown>,
+): Promise<void> {
+  const state = await loadSession();
+  if (!state || state.is_paused) return;
+
+  const ev: CapturedEvent = {
+    recording_id: state.recording_id,
+    user_id: state.user_id,
+    ts_ms: Date.now() - state.started_at - state.paused_ms,
+    kind,
+    data,
+    _localId: uuid(),
+  };
+
+  if (canCaptureNow()) {
+    try {
+      const dataUrl = await chrome.tabs.captureVisibleTab(
+        windowId ?? chrome.windows.WINDOW_ID_CURRENT,
+        { format: "jpeg", quality: 70 },
+      );
+      lastCaptureAt = Date.now();
+      const screenshotId = uuid();
+      ev._screenshotDataUrl = dataUrl;
+      ev.screenshot_path = `${state.user_id}/${state.recording_id}/${screenshotId}.jpg`;
+      await putScreenshot(screenshotId, dataUrl);
+    } catch (err) {
+      ev.screenshot_path = null;
+      const reason = String((err as Error)?.message || err);
+      if (lastFailureReason !== reason) {
+        lastFailureReason = reason;
+        console.warn("[scout] captureVisibleTab failed", { tabId, reason });
+      }
+    }
+  }
+
+  buffer.push(ev);
+  await bumpCounters(ev);
+}
+
+// Maintain live counters in session state so the popup can show an accurate
+// "N events / M screenshots" tally without polling Postgres. Persisting is
+// cheap (chrome.storage.session is in-memory) and tolerable per event.
+async function bumpCounters(ev: CapturedEvent): Promise<void> {
+  const s = await loadSession();
+  if (!s) return;
+  s.event_count = (s.event_count ?? 0) + 1;
+  if (ev.screenshot_path) s.shot_count = (s.shot_count ?? 0) + 1;
+  await saveSession(s);
+  chrome.runtime
+    .sendMessage({
+      type: "popup:counts",
+      event_count: s.event_count,
+      shot_count: s.shot_count,
+    } satisfies RuntimeMessage)
+    .catch(() => {});
 }
 
 const SIGNIFICANT_KEYS = new Set(["Enter", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
@@ -516,13 +598,9 @@ chrome.tabs.onActivated.addListener(async (info) => {
   const state = await loadSession();
   if (!state || state.is_paused) return;
   const tab = await chrome.tabs.get(info.tabId).catch(() => null);
-  buffer.push({
-    recording_id: state.recording_id,
-    user_id: state.user_id,
-    ts_ms: Date.now() - state.started_at - state.paused_ms,
-    kind: "tab_switch",
-    data: { to_tab_id: info.tabId, to_tab_url: tab?.url ?? null },
-    _localId: uuid(),
+  await captureTabAndQueue(info.tabId, tab?.windowId ?? null, "tab_switch", {
+    to_tab_id: info.tabId,
+    to_tab_url: tab?.url ?? null,
   });
   // Make sure the new tab has the control bar.
   if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: "content:show_control_bar" } satisfies RuntimeMessage).catch(() => {});
@@ -531,27 +609,28 @@ chrome.tabs.onActivated.addListener(async (info) => {
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const state = await loadSession();
   if (!state) return;
-  buffer.push({
+  const ev: CapturedEvent = {
     recording_id: state.recording_id,
     user_id: state.user_id,
     ts_ms: Date.now() - state.started_at - state.paused_ms,
     kind: "tab_closed",
     data: { tab_id: tabId },
     _localId: uuid(),
-  });
+  };
+  buffer.push(ev);
+  await bumpCounters(ev);
 });
 
-chrome.webNavigation?.onCommitted?.addListener(async (details) => {
+// Wait for the page to actually paint before capturing — onCommitted fires
+// before the DOM is ready, so a screenshot at that instant captures the
+// previous page or a blank frame.
+chrome.webNavigation?.onCompleted?.addListener(async (details) => {
   if (details.frameId !== 0) return;
   const state = await loadSession();
   if (!state || state.is_paused) return;
-  buffer.push({
-    recording_id: state.recording_id,
-    user_id: state.user_id,
-    ts_ms: Date.now() - state.started_at - state.paused_ms,
-    kind: "navigation",
-    data: { to_url: details.url, navigation_type: details.transitionType },
-    _localId: uuid(),
+  const tab = await chrome.tabs.get(details.tabId).catch(() => null);
+  await captureTabAndQueue(details.tabId, tab?.windowId ?? null, "navigation", {
+    to_url: details.url,
   });
 });
 
