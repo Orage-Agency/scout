@@ -7,8 +7,7 @@ import { marked } from "marked";
 
 type View =
   | { kind: "loading" }
-  | { kind: "signed_out" }
-  | { kind: "magic_sent"; email: string }
+  | { kind: "signed_out"; mode: "signin" | "signup" }
   | { kind: "idle"; tab: "record" | "library" | "settings" }
   | { kind: "recording"; state: RecordingSessionState }
   | { kind: "skill"; recording: RecordingRow; skill: SkillRow | null };
@@ -20,7 +19,7 @@ async function init(): Promise<void> {
   const sb = getSupabase();
   const { data: sess } = await sb.auth.getSession();
   if (!sess.session) {
-    view = { kind: "signed_out" };
+    view = { kind: "signed_out", mode: "signin" };
     return render();
   }
   const { state } = (await chrome.runtime.sendMessage({ type: "popup:get_state" } satisfies RuntimeMessage)) ?? {};
@@ -38,10 +37,7 @@ function render(): void {
       wrap.appendChild(loadingView());
       break;
     case "signed_out":
-      wrap.appendChild(signedOutView());
-      break;
-    case "magic_sent":
-      wrap.appendChild(magicSentView(view.email));
+      wrap.appendChild(signedOutView(view.mode));
       break;
     case "idle":
       wrap.appendChild(header(view.tab));
@@ -98,83 +94,45 @@ function loadingView(): HTMLElement {
 
 // ---- Auth ----
 
-function signedOutView(): HTMLElement {
+function signedOutView(mode: "signin" | "signup"): HTMLElement {
   const d = document.createElement("div");
   d.className = "flex-1 flex flex-col items-center justify-center px-8 gap-3 text-center";
+  const isSignup = mode === "signup";
+  const cta = isSignup ? "Create account" : "Sign in";
+  const altLabel = isSignup ? "Already have an account? Sign in" : "New here? Create an account";
   d.innerHTML = `
     <div class="text-2xl font-semibold tracking-tight">Scout</div>
     <p class="text-muted text-sm leading-relaxed">Capture your workflows. Generate skill files for AI agents.</p>
-    <input id="email" type="email" placeholder="you@company.com" class="input mt-3" />
-    <button id="send" class="btn btn-primary w-full">Email me a code</button>
-    <p class="text-muted text-[11px] leading-snug">We'll send a 6-digit code to your email. No password.</p>
+    <input id="email" type="email" autocomplete="email" placeholder="you@company.com" class="input mt-2" />
+    <input id="pw" type="password" autocomplete="${isSignup ? "new-password" : "current-password"}" placeholder="Password" class="input" />
+    <button id="go" class="btn btn-primary w-full">${cta}</button>
+    <button id="alt" class="btn btn-ghost mt-1 text-xs">${altLabel}</button>
     <p id="err" class="text-accent text-xs"></p>
   `;
-  d.querySelector<HTMLButtonElement>("#send")!.onclick = async () => {
-    const email = d.querySelector<HTMLInputElement>("#email")!.value.trim();
-    const err = d.querySelector<HTMLParagraphElement>("#err")!;
-    if (!email) {
-      err.textContent = "Enter your email.";
-      return;
-    }
-    err.textContent = "";
-    try {
-      const sb = getSupabase();
-      // shouldCreateUser=true is the default; the same call also issues an OTP
-      // code embedded in the email so the user can paste it into the popup —
-      // the magic-link click won't carry the session into the extension's
-      // chrome.storage origin, but the code path lands the session inside
-      // the popup directly.
-      const { error } = await sb.auth.signInWithOtp({ email });
-      if (error) throw error;
-      view = { kind: "magic_sent", email };
-      render();
-    } catch (e) {
-      err.textContent = String((e as Error).message ?? e);
-    }
-  };
-  return d;
-}
-
-function magicSentView(email: string): HTMLElement {
-  const d = document.createElement("div");
-  d.className = "flex-1 flex flex-col items-center justify-center px-8 gap-3 text-center";
-  d.innerHTML = `
-    <div class="text-lg font-semibold tracking-tight">Check your inbox</div>
-    <p class="text-muted text-sm leading-relaxed">Sent a sign-in code to <span class="text-primary">${escapeHtml(email)}</span>. Paste the code below.</p>
-    <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="123456" class="input mt-2 text-center font-mono tracking-[0.4em] text-lg" />
-    <button id="verify" class="btn btn-primary w-full">Verify</button>
-    <p id="err" class="text-accent text-xs"></p>
-    <button id="back" class="btn btn-ghost mt-2">Use another email</button>
-  `;
-  const codeInput = d.querySelector<HTMLInputElement>("#code")!;
+  const emailEl = d.querySelector<HTMLInputElement>("#email")!;
+  const pwEl = d.querySelector<HTMLInputElement>("#pw")!;
   const errEl = d.querySelector<HTMLParagraphElement>("#err")!;
-  codeInput.oninput = () => {
-    // Supabase OTP can be alphanumeric (length set per project; this project uses 8).
-    // Strip whitespace + decoration so pasted "Code: ABC 12345" still works.
-    codeInput.value = codeInput.value.replace(/[^0-9A-Za-z]/g, "").slice(0, 10);
-  };
-  d.querySelector<HTMLButtonElement>("#verify")!.onclick = async () => {
-    const token = codeInput.value.trim().toUpperCase();
-    if (token.length < 6) {
-      errEl.textContent = "Enter the code from your email.";
-      return;
-    }
+  const submit = async () => {
+    const email = emailEl.value.trim();
+    const password = pwEl.value;
+    if (!email) { errEl.textContent = "Enter your email."; return; }
+    if (password.length < 8) { errEl.textContent = "Password must be at least 8 characters."; return; }
     errEl.textContent = "";
     try {
       const sb = getSupabase();
-      const { error } = await sb.auth.verifyOtp({ email, token, type: "email" });
+      const { error } = isSignup
+        ? await sb.auth.signUp({ email, password })
+        : await sb.auth.signInWithPassword({ email, password });
       if (error) throw error;
-      // onAuthStateChange will flip the view to idle automatically.
+      // onAuthStateChange flips the view to idle.
     } catch (e) {
       errEl.textContent = String((e as Error).message ?? e);
     }
   };
-  // Submit on Enter for keyboard fluency.
-  codeInput.onkeydown = (e) => {
-    if (e.key === "Enter") d.querySelector<HTMLButtonElement>("#verify")!.click();
-  };
-  d.querySelector<HTMLButtonElement>("#back")!.onclick = () => {
-    view = { kind: "signed_out" };
+  d.querySelector<HTMLButtonElement>("#go")!.onclick = () => void submit();
+  pwEl.onkeydown = (e) => { if (e.key === "Enter") void submit(); };
+  d.querySelector<HTMLButtonElement>("#alt")!.onclick = () => {
+    view = { kind: "signed_out", mode: isSignup ? "signin" : "signup" };
     render();
   };
   return d;
@@ -299,7 +257,7 @@ function settingsTab(): HTMLElement {
   });
   d.querySelector<HTMLButtonElement>("#signout")!.onclick = async () => {
     await sb.auth.signOut();
-    view = { kind: "signed_out" };
+    view = { kind: "signed_out", mode: "signin" };
     render();
   };
   d.querySelector<HTMLButtonElement>("#del")!.onclick = async () => {
@@ -514,11 +472,11 @@ void init();
 // Re-render if auth state flips (e.g. magic link click in another tab).
 const sb = getSupabase();
 sb.auth.onAuthStateChange((_evt, sess) => {
-  if (!sess && view.kind !== "signed_out" && view.kind !== "magic_sent") {
-    view = { kind: "signed_out" };
+  if (!sess && view.kind !== "signed_out") {
+    view = { kind: "signed_out", mode: "signin" };
     render();
-  } else if (sess && (view.kind === "signed_out" || view.kind === "magic_sent" || view.kind === "loading")) {
-    // OTP verify lands here — flip from magic_sent (or initial loading) into idle.
+  } else if (sess && (view.kind === "signed_out" || view.kind === "loading")) {
+    // signInWithPassword / signUp success lands here.
     view = { kind: "idle", tab: "record" };
     render();
   }
