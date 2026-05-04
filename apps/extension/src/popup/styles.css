@@ -1,52 +1,228 @@
+/* Brand fonts are pulled in via index.html so this file works even when
+   Tailwind hasn't injected them yet. */
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  html, body { font-family: 'Inter', system-ui, sans-serif; }
-  body { -webkit-font-smoothing: antialiased; }
+  html, body {
+    font-family: "Montserrat", system-ui, sans-serif;
+    background: #000000;
+    /* Subtle radial gold glow so even empty space feels branded. */
+    background-image:
+      radial-gradient(ellipse 700px 400px at 80% -10%, rgba(182,128,57,0.10) 0%, transparent 60%),
+      radial-gradient(ellipse 600px 600px at 0% 110%, rgba(228,175,122,0.05) 0%, transparent 60%);
+    background-attachment: fixed;
+  }
+  body {
+    -webkit-font-smoothing: antialiased;
+    color: #FFD69C;
+  }
+  /* Selection in brand color. */
+  ::selection { background: rgba(182,128,57,0.4); color: #FFE8C7; }
 }
 
 @layer components {
-  .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-md text-sm font-medium px-3 py-2 transition-colors;
-    @apply border border-line bg-elevated text-primary hover:bg-line/50 disabled:opacity-50 disabled:cursor-not-allowed;
+  /* Liquid Glass card — translucent surface, frosted blur, hairline gold border,
+     soft inner highlight on top edge to suggest a glass meniscus. */
+  .glass {
+    background: linear-gradient(
+      180deg,
+      rgba(33, 33, 33, 0.55) 0%,
+      rgba(21, 21, 21, 0.45) 100%
+    );
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    border: 1px solid rgba(182, 128, 57, 0.22);
+    border-radius: 8px;
+    box-shadow:
+      0 1px 0 rgba(228, 175, 122, 0.06) inset,
+      0 8px 30px rgba(0, 0, 0, 0.45);
   }
-  .btn-primary {
-    @apply bg-accent border-accent text-primary hover:bg-accent-quiet hover:border-accent-quiet;
-  }
-  .btn-ghost {
-    @apply border-transparent bg-transparent text-muted hover:text-primary hover:bg-elevated;
-  }
-  .input {
-    @apply w-full bg-elevated border border-line rounded-sm px-3 py-2 text-sm text-primary placeholder-muted;
-    @apply focus:outline-none focus:border-accent;
+  .glass-strong {
+    background: linear-gradient(
+      180deg,
+      rgba(33, 33, 33, 0.85) 0%,
+      rgba(21, 21, 21, 0.80) 100%
+    );
+    backdrop-filter: blur(24px) saturate(160%);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    border: 1px solid rgba(182, 128, 57, 0.30);
+    border-radius: 8px;
   }
   .card {
-    @apply bg-elevated border border-line rounded-md p-4;
+    @apply glass p-4;
   }
+
+  /* Buttons — primary is solid gold, secondary is glass with gold hairline. */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 text-sm font-medium px-4 py-2 transition-all duration-150;
+    border-radius: 6px;
+    border: 1px solid rgba(182, 128, 57, 0.30);
+    background: rgba(33, 33, 33, 0.55);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    color: #FFE8C7;
+    letter-spacing: 0.02em;
+  }
+  .btn:hover:not(:disabled) {
+    background: rgba(33, 33, 33, 0.80);
+    border-color: rgba(228, 175, 122, 0.50);
+    color: #FFD69C;
+  }
+  .btn:active:not(:disabled) { transform: translateY(0.5px); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .btn-primary {
+    background: linear-gradient(180deg, #C68A41 0%, #A77131 100%);
+    border-color: rgba(228, 175, 122, 0.55);
+    color: #1a0e02;
+    font-weight: 600;
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.12) inset,
+      0 -1px 0 rgba(0, 0, 0, 0.20) inset,
+      0 4px 18px rgba(182, 128, 57, 0.25);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: linear-gradient(180deg, #D69753 0%, #B6803F 100%);
+    border-color: rgba(228, 175, 122, 0.70);
+    color: #1a0e02;
+  }
+
+  .btn-ghost {
+    background: transparent;
+    border-color: transparent;
+    color: rgba(255, 232, 199, 0.55);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: rgba(33, 33, 33, 0.50);
+    color: #FFD69C;
+  }
+
+  /* Inputs — frosted, gold-on-focus. */
+  .input {
+    @apply w-full text-sm px-3 py-2 transition-colors duration-150;
+    background: rgba(21, 21, 21, 0.55);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(182, 128, 57, 0.22);
+    border-radius: 4px;
+    color: #FFE8C7;
+  }
+  .input::placeholder { color: rgba(255, 232, 199, 0.35); }
+  .input:focus {
+    outline: none;
+    border-color: rgba(228, 175, 122, 0.65);
+    box-shadow: 0 0 0 3px rgba(182, 128, 57, 0.12);
+  }
+
+  /* Display label — Bebas Neue, all caps, brand-spaced. */
   .label {
-    @apply text-xs uppercase tracking-wide text-muted;
+    font-family: "Bebas Neue", system-ui, sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: #B68039;
+    text-transform: uppercase;
+    font-weight: 700;
   }
+  .display {
+    font-family: "Bebas Neue", system-ui, sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #E4AF7A;
+    line-height: 1;
+  }
+
   .record-dot {
-    @apply inline-block w-2.5 h-2.5 rounded-full bg-accent;
-    animation: pulse 1.4s ease-in-out infinite;
+    @apply inline-block w-2.5 h-2.5 rounded-full;
+    background: #DC2626;
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.6);
+    animation: pulse-dot 1.6s ease-in-out infinite;
+  }
+
+  /* Soft gold divider — matches the brand HTML's section dividers. */
+  .divider-gold {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(182,128,57,0.35), transparent);
+  }
+
+  /* Tab pills */
+  .tab-pill {
+    font-family: "Bebas Neue", system-ui, sans-serif;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-size: 11px;
+    padding: 6px 12px;
+    border-radius: 4px;
+    color: rgba(255, 232, 199, 0.45);
+    transition: all 0.12s ease;
+    cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .tab-pill:hover { color: #FFD69C; }
+  .tab-pill.active {
+    color: #E4AF7A;
+    background: rgba(182, 128, 57, 0.10);
+    border-color: rgba(182, 128, 57, 0.30);
   }
 }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+@keyframes pulse-dot {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.55);
+  }
+  50% {
+    opacity: 0.45;
+    box-shadow: 0 0 0 6px rgba(220, 38, 38, 0);
+  }
 }
 
-/* Markdown rendering inside the side panel. */
-.skill-md h1 { @apply text-lg font-semibold mt-3 mb-2; }
-.skill-md h2 { @apply text-sm font-semibold uppercase tracking-wide text-muted mt-4 mb-1; }
-.skill-md p  { @apply text-sm leading-relaxed mb-2; }
-.skill-md ul { @apply list-disc pl-5 text-sm mb-2; }
-.skill-md ol { @apply list-decimal pl-5 text-sm mb-2; }
-.skill-md li { @apply mb-1; }
-.skill-md code { @apply font-mono text-xs bg-base px-1 py-0.5 rounded; }
-.skill-md pre { @apply font-mono text-xs bg-base p-2 rounded overflow-x-auto; }
-.skill-md hr { @apply border-line my-3; }
-.skill-md img { @apply max-w-full rounded my-2 border border-line; }
+/* Markdown rendering inside the skill view. */
+.skill-md h1 {
+  font-family: "Bebas Neue", system-ui, sans-serif;
+  font-size: 22px;
+  letter-spacing: 0.04em;
+  color: #E4AF7A;
+  margin: 12px 0 8px;
+  text-transform: uppercase;
+}
+.skill-md h2 {
+  font-family: "Bebas Neue", system-ui, sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  color: #B68039;
+  text-transform: uppercase;
+  margin-top: 18px;
+  margin-bottom: 6px;
+}
+.skill-md p { font-size: 13px; line-height: 1.65; margin-bottom: 8px; color: #FFE8C7; }
+.skill-md ul { list-style: disc; padding-left: 20px; font-size: 13px; margin-bottom: 8px; color: #FFE8C7; }
+.skill-md ol { list-style: decimal; padding-left: 20px; font-size: 13px; margin-bottom: 8px; color: #FFE8C7; }
+.skill-md li { margin-bottom: 4px; }
+.skill-md code {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  background: rgba(182, 128, 57, 0.12);
+  color: #E4AF7A;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.skill-md pre {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(182, 128, 57, 0.22);
+  padding: 10px;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+.skill-md hr { border: 0; height: 1px; background: rgba(182, 128, 57, 0.22); margin: 14px 0; }
+.skill-md img { max-width: 100%; border-radius: 4px; margin: 8px 0; border: 1px solid rgba(182, 128, 57, 0.22); }
+
+/* Status pill colors — semantic + gold-aligned */
+.status-ready { color: #15803D; }
+.status-failed { color: #DC2626; }
+.status-progress { color: #E4AF7A; }
+.status-idle { color: rgba(255, 232, 199, 0.55); }

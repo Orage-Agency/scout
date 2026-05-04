@@ -133,27 +133,30 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     bar.style.cssText = `
       position: fixed; top: 16px; right: 16px;
       width: 280px; height: 44px;
-      background: rgba(15,23,42,0.92);
-      color: #F1F5F9;
-      border: 1px solid #334155;
-      border-radius: 0;
+      background: linear-gradient(180deg, rgba(33,33,33,0.78) 0%, rgba(0,0,0,0.78) 100%);
+      backdrop-filter: blur(20px) saturate(160%);
+      -webkit-backdrop-filter: blur(20px) saturate(160%);
+      color: #FFE8C7;
+      border: 1px solid rgba(182,128,57,0.30);
+      border-radius: 6px;
+      box-shadow: 0 1px 0 rgba(228,175,122,0.08) inset, 0 8px 30px rgba(0,0,0,0.45);
       display: flex; align-items: center;
       padding: 0 12px; gap: 10px;
-      font: 500 13px/1 'Inter', system-ui, sans-serif;
+      font: 500 13px/1 'Montserrat', system-ui, sans-serif;
       z-index: 2147483646; user-select: none;
       cursor: grab;
     `;
     bar.innerHTML = `
-      <span data-scout-dot style="width:10px;height:10px;border-radius:50%;background:#DC2626;animation:scout-pulse 1.4s ease-in-out infinite;display:inline-block;"></span>
-      <span data-scout-time style="font-variant-numeric: tabular-nums; min-width:42px;">00:00</span>
-      <span style="flex:1;color:#94A3B8;font-size:11px;">Recording</span>
-      <button data-scout-pause aria-label="Pause" style="background:transparent;border:0;color:#F1F5F9;cursor:pointer;padding:6px;">⏸</button>
-      <button data-scout-stop aria-label="Stop" style="background:transparent;border:0;color:#DC2626;cursor:pointer;padding:6px;font-weight:700;">■</button>
+      <span data-scout-dot style="width:10px;height:10px;border-radius:50%;background:#DC2626;box-shadow:0 0 0 0 rgba(220,38,38,0.55);animation:scout-pulse 1.6s ease-in-out infinite;display:inline-block;flex-shrink:0;"></span>
+      <span data-scout-time style="font-variant-numeric: tabular-nums; min-width:42px; color:#E4AF7A; font-weight:600;">00:00</span>
+      <span style="flex:1;color:#B68039;font-family:'Bebas Neue',sans-serif;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;">Scout</span>
+      <button data-scout-pause aria-label="Pause" style="background:transparent;border:0;color:#FFE8C7;cursor:pointer;padding:6px;font-size:14px;">⏸</button>
+      <button data-scout-stop aria-label="Stop" style="background:transparent;border:0;color:#DC2626;cursor:pointer;padding:6px;font-weight:700;font-size:14px;">■</button>
     `;
     if (!document.getElementById("scout-style")) {
       const st = document.createElement("style");
       st.id = "scout-style";
-      st.textContent = `@keyframes scout-pulse{0%,100%{opacity:1}50%{opacity:.35}}`;
+      st.textContent = `@keyframes scout-pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(220,38,38,0.55)}50%{opacity:.45;box-shadow:0 0 0 6px rgba(220,38,38,0)}}`;
       document.head.appendChild(st);
     }
     document.body.appendChild(bar);
@@ -242,23 +245,26 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     box.setAttribute("data-scout-ignore", "true");
     box.style.cssText = `
       position: fixed; right: 24px; bottom: 24px;
-      width: 320px; padding: 16px;
-      background: #1E293B;
-      color: #F1F5F9;
-      border: 1px solid #334155;
-      border-radius: 6px;
-      font: 14px/1.45 'Inter', system-ui, sans-serif;
+      width: 320px; padding: 16px 18px;
+      background: linear-gradient(180deg, rgba(33,33,33,0.92) 0%, rgba(21,21,21,0.92) 100%);
+      backdrop-filter: blur(24px) saturate(160%);
+      -webkit-backdrop-filter: blur(24px) saturate(160%);
+      color: #FFE8C7;
+      border: 1px solid rgba(182,128,57,0.35);
+      border-radius: 8px;
+      box-shadow: 0 1px 0 rgba(228,175,122,0.10) inset, 0 12px 40px rgba(0,0,0,0.55);
+      font: 14px/1.5 'Montserrat', system-ui, sans-serif;
       z-index: 2147483647;
       transform: translateY(20px); opacity: 0;
       transition: transform .3s ease-out, opacity .3s ease-out;
       pointer-events: auto;
     `;
     box.innerHTML = `
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#94A3B8;margin-bottom:6px;">Scout</div>
-      <div style="margin-bottom:12px;">${escapeHtml(ask)}</div>
+      <div style="font-family:'Bebas Neue',sans-serif;font-size:11px;letter-spacing:0.18em;color:#B68039;margin-bottom:8px;text-transform:uppercase;">Scout · Coach</div>
+      <div style="margin-bottom:14px;color:#FFE8C7;">${escapeHtml(ask)}</div>
       <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button data-scout-skip style="background:transparent;border:0;color:#94A3B8;cursor:pointer;font-size:12px;padding:6px 10px;">Skip</button>
-        <button data-scout-reply style="background:#DC2626;border:0;color:#F1F5F9;cursor:pointer;font-size:12px;padding:6px 10px;border-radius:4px;">Reply by voice</button>
+        <button data-scout-skip style="background:transparent;border:0;color:rgba(255,232,199,0.55);cursor:pointer;font-size:12px;padding:6px 10px;font-family:inherit;">Skip</button>
+        <button data-scout-reply style="background:linear-gradient(180deg,#C68A41 0%,#A77131 100%);border:1px solid rgba(228,175,122,0.55);color:#1a0e02;cursor:pointer;font-size:12px;padding:6px 12px;border-radius:4px;font-family:inherit;font-weight:600;">Reply by voice</button>
       </div>
     `;
     document.body.appendChild(box);

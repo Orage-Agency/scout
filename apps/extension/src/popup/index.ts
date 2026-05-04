@@ -60,19 +60,21 @@ function render(): void {
 
 function header(active: "record" | "library" | "settings" | null): HTMLElement {
   const h = document.createElement("header");
-  h.className = "px-4 py-3 border-b border-line flex items-center gap-3";
+  h.className = "px-5 pt-5 pb-3 flex flex-col gap-3 relative";
   h.innerHTML = `
-    <span class="font-semibold tracking-tight">Scout</span>
-    <span class="text-muted text-xs">v0.1.0</span>
-    <span class="ml-auto"></span>
+    <div class="flex items-baseline gap-3">
+      <span class="display text-[28px]" style="color:#E4AF7A;">SCOUT</span>
+      <span class="label" style="font-size:9px;">v0.1.1 · Orage AI</span>
+    </div>
+    <div class="divider-gold"></div>
   `;
   if (active) {
     const nav = document.createElement("nav");
-    nav.className = "flex gap-1 text-xs";
+    nav.className = "flex gap-1.5 mt-1";
     for (const t of ["record", "library", "settings"] as const) {
       const b = document.createElement("button");
-      b.className = `px-2 py-1 rounded-sm ${active === t ? "bg-elevated text-primary" : "text-muted hover:text-primary"}`;
-      b.textContent = t[0].toUpperCase() + t.slice(1);
+      b.className = `tab-pill${active === t ? " active" : ""}`;
+      b.textContent = t;
       b.onclick = () => {
         view = { kind: "idle", tab: t };
         render();
@@ -88,8 +90,11 @@ function header(active: "record" | "library" | "settings" | null): HTMLElement {
 
 function loadingView(): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 flex items-center justify-center text-muted text-sm";
-  d.textContent = "Loading…";
+  d.className = "flex-1 flex flex-col items-center justify-center min-h-[480px] gap-3";
+  d.innerHTML = `
+    <div class="display text-[36px]" style="color:#E4AF7A;">SCOUT</div>
+    <div class="text-[11px]" style="color:rgba(255,232,199,0.5);font-family:'Bebas Neue',sans-serif;letter-spacing:0.18em;text-transform:uppercase;">Loading</div>
+  `;
   return d;
 }
 
@@ -97,18 +102,21 @@ function loadingView(): HTMLElement {
 
 function signedOutView(mode: "signin" | "signup"): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 flex flex-col items-center justify-center px-8 gap-3 text-center";
+  d.className = "flex-1 flex flex-col items-center justify-center px-7 gap-2.5 text-center min-h-[480px]";
   const isSignup = mode === "signup";
   const cta = isSignup ? "Create account" : "Sign in";
   const altLabel = isSignup ? "Already have an account? Sign in" : "New here? Create an account";
   d.innerHTML = `
-    <div class="text-2xl font-semibold tracking-tight">Scout</div>
-    <p class="text-muted text-sm leading-relaxed">Capture your workflows. Generate skill files for AI agents.</p>
-    <input id="email" type="email" autocomplete="email" placeholder="you@company.com" class="input mt-2" />
-    <input id="pw" type="password" autocomplete="${isSignup ? "new-password" : "current-password"}" placeholder="Password" class="input" />
-    <button id="go" class="btn btn-primary w-full">${cta}</button>
-    <button id="alt" class="btn btn-ghost mt-1 text-xs">${altLabel}</button>
-    <p id="err" class="text-accent text-xs"></p>
+    <div class="display text-[44px] mb-1" style="color:#E4AF7A;">SCOUT</div>
+    <div class="label mb-3" style="color:#B68039;">By Orage AI</div>
+    <p class="text-[13px] leading-relaxed mb-4" style="color:rgba(255,232,199,0.65); max-width:280px;">Capture human workflows. Generate skill files for AI agents.</p>
+    <div class="glass w-full p-4 flex flex-col gap-2.5">
+      <input id="email" type="email" autocomplete="email" placeholder="you@company.com" class="input" />
+      <input id="pw" type="password" autocomplete="${isSignup ? "new-password" : "current-password"}" placeholder="Password (min 8 chars)" class="input" />
+      <button id="go" class="btn btn-primary w-full mt-1">${cta}</button>
+    </div>
+    <button id="alt" class="btn btn-ghost mt-2 text-xs">${altLabel}</button>
+    <p id="err" class="text-xs mt-1" style="color:#DC2626;"></p>
   `;
   const emailEl = d.querySelector<HTMLInputElement>("#email")!;
   const pwEl = d.querySelector<HTMLInputElement>("#pw")!;
@@ -149,12 +157,19 @@ function idleView(tab: "record" | "library" | "settings"): HTMLElement {
 
 function recordTab(): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 flex flex-col items-center justify-center gap-3 px-8 py-10 text-center";
+  d.className = "flex-1 flex flex-col items-center justify-center gap-4 px-8 py-10 text-center";
   d.innerHTML = `
-    <button id="rec" class="w-24 h-24 rounded-full bg-accent hover:bg-accent-quiet transition-colors flex items-center justify-center text-primary text-3xl">●</button>
-    <div class="text-sm font-medium">Start Recording</div>
-    <p class="text-muted text-xs leading-relaxed">Press to begin. We'll capture clicks, key presses, screenshots, and your voice while you narrate.</p>
-    <p id="warn" class="text-warning text-xs leading-snug hidden"></p>
+    <div class="relative">
+      <div class="absolute inset-0 rounded-full" style="background:radial-gradient(circle, rgba(182,128,57,0.35) 0%, transparent 70%); transform:scale(1.5); pointer-events:none;"></div>
+      <button id="rec"
+        class="relative w-[104px] h-[104px] rounded-full transition-all duration-200 flex items-center justify-center"
+        style="background:linear-gradient(180deg,#C68A41 0%,#8B5E2A 100%); border:1px solid rgba(228,175,122,0.7); box-shadow:0 1px 0 rgba(255,255,255,0.18) inset, 0 -2px 0 rgba(0,0,0,0.3) inset, 0 8px 30px rgba(182,128,57,0.40);">
+        <span class="block w-7 h-7 rounded-full" style="background:#1a0e02;"></span>
+      </button>
+    </div>
+    <div class="display text-[18px] mt-3" style="color:#E4AF7A;">Start Recording</div>
+    <p class="text-[12px] leading-relaxed max-w-[280px]" style="color:rgba(255,232,199,0.55);">We'll capture clicks, keystrokes, screenshots, and your narration. Talk through the <em style="color:#E4AF7A;font-style:normal;">why</em> and the skill writes itself.</p>
+    <p id="warn" class="text-[11px] leading-snug hidden glass px-3 py-2 mt-1" style="color:#B45309;"></p>
   `;
   const warnEl = d.querySelector<HTMLParagraphElement>("#warn")!;
   // Show a hint if the active tab is one Chrome blocks content scripts on —
@@ -185,8 +200,8 @@ function recordTab(): HTMLElement {
 
 function libraryTab(): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 px-4 py-4 overflow-y-auto";
-  d.innerHTML = `<div class="label mb-2">Library</div><div id="list" class="space-y-2"></div>`;
+  d.className = "flex-1 px-5 py-4 overflow-y-auto";
+  d.innerHTML = `<div class="label mb-3">Recordings</div><div id="list" class="space-y-2"></div>`;
   loadLibrary(d.querySelector<HTMLDivElement>("#list")!);
   return d;
 }
@@ -204,27 +219,31 @@ async function loadLibrary(container: HTMLDivElement): Promise<void> {
     return;
   }
   if (!data?.length) {
-    container.innerHTML = `<div class="text-muted text-xs">No recordings yet. Hit record to make your first one.</div>`;
+    container.innerHTML = `<div class="glass p-5 text-center">
+      <div class="text-[12px] mb-1" style="color:rgba(255,232,199,0.55);">Nothing here yet.</div>
+      <div class="text-[11px]" style="color:rgba(255,232,199,0.4);">Hit Record on a real web page to make your first one.</div>
+    </div>`;
     return;
   }
   container.innerHTML = "";
   for (const r of data as Array<RecordingRow & { skills: SkillRow[] }>) {
     const card = document.createElement("button");
-    card.className = "w-full card text-left hover:bg-line/30 transition-colors";
+    card.className = "w-full glass text-left p-3.5 transition-all hover:scale-[1.01]";
+    card.style.cursor = "pointer";
     const title = r.title || "Untitled recording";
-    const date = new Date(r.started_at).toLocaleString();
+    const date = new Date(r.started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
     const dur = r.duration_ms ? `${Math.round(r.duration_ms / 1000)}s` : "—";
     const status = r.status;
     const hasSkill = (r.skills?.length ?? 0) > 0;
     card.innerHTML = `
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 flex-1">
-          <div class="text-sm font-medium truncate">${escapeHtml(title)}</div>
-          <div class="text-xs text-muted mt-0.5">${escapeHtml(date)} · ${dur}</div>
+          <div class="text-[13px] font-medium truncate" style="color:#FFE8C7;">${escapeHtml(title)}</div>
+          <div class="text-[11px] mt-1" style="color:rgba(255,232,199,0.45);">${escapeHtml(date)} · ${dur}</div>
         </div>
-        <span class="text-[10px] uppercase tracking-wide ${statusColor(status)}">${status}</span>
+        <span class="${statusColor(status)}" style="font-family:'Bebas Neue',sans-serif; font-size:10px; letter-spacing:0.18em; text-transform:uppercase;">${status}</span>
       </div>
-      <div class="mt-2 text-xs text-muted">${hasSkill ? "Skill ready" : "No skill yet"}</div>
+      <div class="mt-2 text-[11px]" style="color:${hasSkill ? "#E4AF7A" : "rgba(255,232,199,0.4)"};">${hasSkill ? "✦ Skill ready" : "No skill yet"}</div>
     `;
     card.onclick = () => {
       view = { kind: "skill", recording: r, skill: r.skills?.[0] ?? null };
@@ -235,22 +254,26 @@ async function loadLibrary(container: HTMLDivElement): Promise<void> {
 }
 
 function statusColor(s: string): string {
-  if (s === "ready") return "text-success";
-  if (s === "failed") return "text-accent";
-  if (s === "transcribing" || s === "uploading") return "text-warning";
-  return "text-muted";
+  if (s === "ready") return "status-ready";
+  if (s === "failed") return "status-failed";
+  if (s === "transcribing" || s === "uploading") return "status-progress";
+  return "status-idle";
 }
 
 function settingsTab(): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 px-4 py-4 space-y-4";
+  d.className = "flex-1 px-5 py-4 space-y-4";
   d.innerHTML = `
-    <div class="label">Account</div>
-    <div id="who" class="text-sm text-muted">…</div>
-    <button id="signout" class="btn">Sign out</button>
-    <div class="label pt-4">Data</div>
-    <button id="del" class="btn">Delete all my data</button>
-    <p class="text-muted text-xs">Cascades through recordings, events, screenshots, audio, and skills.</p>
+    <div class="glass p-4">
+      <div class="label mb-2">Account</div>
+      <div id="who" class="text-[13px]" style="color:#FFE8C7;">…</div>
+      <button id="signout" class="btn w-full mt-3">Sign out</button>
+    </div>
+    <div class="glass p-4">
+      <div class="label mb-2">Data</div>
+      <button id="del" class="btn w-full">Delete all my data</button>
+      <p class="text-[11px] leading-relaxed mt-2" style="color:rgba(255,232,199,0.45);">Cascades through recordings, events, screenshots, audio, and skills. This cannot be undone.</p>
+    </div>
   `;
   const sb = getSupabase();
   sb.auth.getUser().then(({ data }) => {
@@ -275,28 +298,28 @@ function settingsTab(): HTMLElement {
 
 function recordingView(s: RecordingSessionState): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 px-4 py-6 flex flex-col gap-3";
+  d.className = "flex-1 px-5 py-5 flex flex-col gap-3";
   const startedMs = s.started_at;
   const audioBadge = s.audio_supported
-    ? `<span class="text-[10px] uppercase tracking-wide text-success">audio on</span>`
-    : `<span class="text-[10px] uppercase tracking-wide text-warning" title="Mic denied or unavailable. Recording continues without narration.">audio off</span>`;
+    ? `<span class="label" style="font-size:9px;color:#15803D;">audio on</span>`
+    : `<span class="label" style="font-size:9px;color:#B45309;" title="Mic denied or unavailable. Recording continues without narration.">audio off</span>`;
   const tabTitle = s.active_tab_title?.trim() || (s.active_tab_url ? new URL(s.active_tab_url).hostname : "—");
   d.innerHTML = `
-    <div class="card">
+    <div class="glass p-4">
       <div class="flex items-center gap-2">
         <span class="record-dot"></span>
-        <span class="text-sm font-medium">Recording</span>
+        <span class="display text-[15px]" style="color:#E4AF7A;">Recording</span>
         ${audioBadge}
-        <span id="t" class="ml-auto font-mono tabular-nums text-sm">00:00</span>
+        <span id="t" class="ml-auto font-mono tabular-nums text-[13px]" style="color:#E4AF7A;">00:00</span>
       </div>
-      <div id="tabname" class="text-xs text-muted mt-2 truncate" title="${escapeHtml(tabTitle)}">on ${escapeHtml(tabTitle)}</div>
-      <div id="evcount" class="text-xs text-muted mt-1">${s.event_count ?? 0} events · ${s.shot_count ?? 0} screenshots</div>
+      <div id="tabname" class="text-[11px] mt-3 truncate" style="color:rgba(255,232,199,0.55);" title="${escapeHtml(tabTitle)}">on <span style="color:#FFE8C7;">${escapeHtml(tabTitle)}</span></div>
+      <div id="evcount" class="text-[11px] mt-1" style="color:rgba(255,232,199,0.45);">${s.event_count ?? 0} events · ${s.shot_count ?? 0} screenshots</div>
     </div>
     <div class="flex gap-2">
       <button id="pause" class="btn flex-1">${s.is_paused ? "Resume" : "Pause"}</button>
       <button id="stop" class="btn btn-primary flex-1">Stop</button>
     </div>
-    <p class="text-muted text-xs leading-relaxed">Switch tabs freely. The control bar in the page is also yours.</p>
+    <p class="text-[11px] leading-relaxed mt-1" style="color:rgba(255,232,199,0.45);">Switch tabs freely — the floating control bar in the page is also yours.</p>
   `;
   const tEl = d.querySelector<HTMLSpanElement>("#t")!;
   setInterval(() => {
@@ -335,11 +358,11 @@ function recordingView(s: RecordingSessionState): HTMLElement {
 
 function skillView(rec: RecordingRow, skill: SkillRow | null): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 px-4 py-4 overflow-y-auto";
+  d.className = "flex-1 px-5 py-4 overflow-y-auto";
 
   const back = document.createElement("button");
   back.className = "btn btn-ghost mb-3";
-  back.textContent = "← Back to library";
+  back.textContent = "← Library";
   back.onclick = () => {
     view = { kind: "idle", tab: "library" };
     render();
@@ -347,22 +370,22 @@ function skillView(rec: RecordingRow, skill: SkillRow | null): HTMLElement {
   d.appendChild(back);
 
   const meta = document.createElement("div");
-  meta.className = "card mb-3";
+  meta.className = "glass p-4 mb-3";
   meta.innerHTML = `
-    <div class="text-sm font-medium">${escapeHtml(rec.title || "Untitled recording")}</div>
-    <div class="text-xs text-muted mt-1">${escapeHtml(new Date(rec.started_at).toLocaleString())} · ${
+    <div class="display text-[18px] mb-1" style="color:#E4AF7A;">${escapeHtml(rec.title || "Untitled")}</div>
+    <div class="text-[11px]" style="color:rgba(255,232,199,0.5);">${escapeHtml(new Date(rec.started_at).toLocaleString())} · ${
     rec.duration_ms ? Math.round(rec.duration_ms / 1000) + "s" : "—"
-  } · ${rec.status}</div>
+  } · <span class="${statusColor(rec.status)}" style="font-family:'Bebas Neue',sans-serif;letter-spacing:0.18em;text-transform:uppercase;">${rec.status}</span></div>
   `;
   d.appendChild(meta);
 
   if (!skill) {
     const gen = document.createElement("div");
-    gen.className = "card";
+    gen.className = "glass p-4";
     gen.innerHTML = `
-      <div class="text-sm mb-2">No skill generated for this recording.</div>
+      <div class="text-[13px] mb-3" style="color:#FFE8C7;">No skill generated yet for this recording.</div>
       <button id="gen" class="btn btn-primary w-full">Generate Skill</button>
-      <div id="genstatus" class="text-xs text-muted mt-2"></div>
+      <div id="genstatus" class="text-[11px] mt-2" style="color:rgba(255,232,199,0.55);"></div>
     `;
     gen.querySelector<HTMLButtonElement>("#gen")!.onclick = () => generate(rec.id, gen);
     d.appendChild(gen);
@@ -373,7 +396,7 @@ function skillView(rec: RecordingRow, skill: SkillRow | null): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "grid grid-cols-2 gap-2 mb-3";
   actions.innerHTML = `
-    <button id="claude" class="btn btn-primary col-span-2">Save as Claude Code skill (.zip)</button>
+    <button id="claude" class="btn btn-primary col-span-2">⬇ Save as Claude Code skill</button>
     <button id="cp" class="btn">Copy</button>
     <button id="dl" class="btn">Save .md</button>
     <button id="rg" class="btn col-span-2">Regenerate</button>
@@ -393,10 +416,10 @@ function skillView(rec: RecordingRow, skill: SkillRow | null): HTMLElement {
   // One-line install hint so the user knows where the zip goes.
   const slug = (skill.body_md.match(/^name:\s*(.+)$/m)?.[1] ?? "skill").trim();
   const hint = document.createElement("div");
-  hint.className = "card text-xs text-muted leading-relaxed mb-3";
+  hint.className = "glass p-3 mb-3";
   hint.innerHTML = `
-    <div class="text-primary font-medium mb-1">To use with Claude Code</div>
-    <div>Click <b>Save as Claude Code skill</b>, then extract the zip into <code class="text-primary">~/.claude/skills/</code>. The skill will be available in your next Claude Code session as <code class="text-primary">${escapeHtml(slug)}</code>.</div>
+    <div class="label mb-1.5" style="font-size:9px;">Install</div>
+    <div class="text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.65);">Extract the zip into <code style="font-family:'JetBrains Mono',monospace;font-size:10px;background:rgba(182,128,57,0.15);padding:1px 5px;border-radius:3px;color:#E4AF7A;">~/.claude/skills/</code> — Claude Code will pick up <span style="color:#E4AF7A;font-weight:500;">${escapeHtml(slug)}</span> on next session.</div>
   `;
   d.appendChild(hint);
 
@@ -411,7 +434,9 @@ function skillView(rec: RecordingRow, skill: SkillRow | null): HTMLElement {
     const fm = document.createElement("div");
     // whitespace-pre-wrap preserves newlines but lets long lines wrap inside
     // the 380px popup column. break-words handles long URL-like values too.
-    fm.className = "card mb-3 text-xs font-mono leading-relaxed text-muted whitespace-pre-wrap break-words";
+    fm.className = "glass p-3 mb-3 text-[11px] leading-relaxed whitespace-pre-wrap break-words";
+    fm.style.fontFamily = "'JetBrains Mono', monospace";
+    fm.style.color = "rgba(255, 232, 199, 0.55)";
     fm.textContent = frontmatter;
     d.appendChild(fm);
   }
