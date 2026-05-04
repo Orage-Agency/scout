@@ -24,6 +24,17 @@ const MAX_ASKS_PER_RECORDING = 6;
 // in flight when the worker dies is lost (events the content scripts already
 // sent) and that's an accepted tradeoff for v1.
 let buffer: CapturedEvent[] = [];
+
+// Coach ring buffer — keeps the last N events even AFTER flushBuffer clears
+// the main buffer. Without this, the 30s coach cycle reads `buffer.slice(-15)`
+// just after a 5s flush has emptied it, sees zero events, and silently
+// returns — which is why the coach was effectively never firing.
+const COACH_RING_MAX = 40;
+let coachRing: CapturedEvent[] = [];
+function pushCoachRing(ev: CapturedEvent): void {
+  coachRing.push(ev);
+  if (coachRing.length > COACH_RING_MAX) coachRing.splice(0, coachRing.length - COACH_RING_MAX);
+}
 let flushTimer: number | null = null;
 let coachTimer: number | null = null;
 
@@ -92,6 +103,7 @@ async function startRecording(): Promise<RecordingSessionState | null> {
   // across sessions.
   lastCaptureAt = 0;
   lastFailureReason = null;
+  coachRing = [];
 
   startTimers();
 
@@ -260,12 +272,14 @@ async function onContentEvent(ev: CapturedEvent, sender: chrome.runtime.MessageS
           _localId: uuid(),
         };
         buffer.push(failEv);
+        pushCoachRing(failEv);
         await bumpCounters(failEv);
       }
     }
   }
 
   buffer.push(ev);
+  pushCoachRing(ev);
   await bumpCounters(ev);
 }
 
@@ -322,6 +336,7 @@ async function captureTabAndQueue(
   }
 
   buffer.push(ev);
+  pushCoachRing(ev);
   await bumpCounters(ev);
 }
 
@@ -438,8 +453,16 @@ async function runCoachCycle(): Promise<void> {
   if (state.ask_count >= MAX_ASKS_PER_RECORDING) return;
   if (state.last_ask_at && Date.now() - state.last_ask_at < MIN_ASK_GAP_MS) return;
 
-  const recentEvents = buffer.slice(-15).map((e) => ({ kind: e.kind, ts_ms: e.ts_ms, data: e.data }));
-  if (!recentEvents.length) return;
+  // Read from coachRing — buffer gets emptied every 5s by flushBuffer, so
+  // by the time the 30s coach cycle fires the buffer is almost always empty.
+  const recentEvents = coachRing
+    .slice(-20)
+    .map((e) => ({ kind: e.kind, ts_ms: e.ts_ms, data: e.data }));
+  if (!recentEvents.length) {
+    console.log("[scout] coach: no recent events, skipping");
+    return;
+  }
+  console.log(`[scout] coach: calling /coach with ${recentEvents.length} events`);
 
   try {
     const sb = getSupabase();
@@ -648,6 +671,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     _localId: uuid(),
   };
   buffer.push(ev);
+  pushCoachRing(ev);
   await bumpCounters(ev);
 });
 

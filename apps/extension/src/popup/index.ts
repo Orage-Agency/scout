@@ -149,12 +149,12 @@ function magicSentView(email: string): HTMLElement {
   const codeInput = d.querySelector<HTMLInputElement>("#code")!;
   const errEl = d.querySelector<HTMLParagraphElement>("#err")!;
   codeInput.oninput = () => {
-    // Strip non-digits so accidental paste of "Code: 123 456" still works.
-    // Supabase OTP length is configurable per project (commonly 6 or 8); accept up to 10.
-    codeInput.value = codeInput.value.replace(/\D+/g, "").slice(0, 10);
+    // Supabase OTP can be alphanumeric (length set per project; this project uses 8).
+    // Strip whitespace + decoration so pasted "Code: ABC 12345" still works.
+    codeInput.value = codeInput.value.replace(/[^0-9A-Za-z]/g, "").slice(0, 10);
   };
   d.querySelector<HTMLButtonElement>("#verify")!.onclick = async () => {
-    const token = codeInput.value.trim();
+    const token = codeInput.value.trim().toUpperCase();
     if (token.length < 6) {
       errEl.textContent = "Enter the code from your email.";
       return;
