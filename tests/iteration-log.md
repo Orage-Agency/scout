@@ -24,3 +24,9 @@
 | 2026-05-05 04:54:54 | 3 | 52.6s | signup=0.8s · record=1.8s · stop->skill=50.8s · skill->zip=-0.1s | approve-refund-and-close-ticket.zip |
 | 2026-05-05 04:56:01 | 3 | 58.7s | signup=0.7s · record=1.7s · stop->skill=57.0s · skill->zip=-0.1s | approve-refund-and-close-ticket.zip |
 | 2026-05-05 04:57:02 | 3 | 52.3s | signup=1.0s · record=1.9s · stop->skill=50.4s · skill->zip=-0.1s | approve-refund-and-close-ticket.zip |
+| RETURN 2026-05-05 04:58:12 | 2 | 47.3s | record->zip | approve-refund-and-close-ticket.zip |
+| RETURN 2026-05-05 04:59:10 | 2 | 49.6s | record->zip | approve-refund-and-close-ticket.zip |
+| RETURN 2026-05-05 05:00:07 | 2 | 49.0s | record->zip | approve-refund-ticket.zip |
+| RETURN 2026-05-05 05:01:08 | 2 | 53.0s | record->zip | approve-refund-ticket.zip |
+| RETURN 2026-05-05 05:02:09 | 2 | 52.1s | record->zip | approve-refund-ticket.zip |
+| RETURN 2026-05-05 05:03:04 | 2 | 47.9s | record->zip | approve-refund-ticket.zip |
