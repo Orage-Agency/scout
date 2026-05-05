@@ -178,6 +178,10 @@
     box-shadow: 0 0 0 6px rgba(220, 38, 38, 0);
   }
 }
+@keyframes scout-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
 
 /* Markdown rendering inside the skill view. */
 .skill-md h1 {

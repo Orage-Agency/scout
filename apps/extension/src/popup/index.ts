@@ -11,10 +11,17 @@ type View =
   | { kind: "signed_out"; mode: "signin" | "signup" }
   | { kind: "idle"; tab: "record" | "library" | "settings" }
   | { kind: "recording"; state: RecordingSessionState }
-  | { kind: "skill"; recording: RecordingRow; skill: SkillRow | null };
+  // Single transitional state covering everything between Stop and Skill-Ready.
+  // The popup shows a single staged progress UI; the user does nothing.
+  | { kind: "processing"; recording: RecordingRow; stage: "uploading" | "transcribing" | "drafting"; error?: string }
+  | { kind: "skill"; recording: RecordingRow; skill: SkillRow | null; autoDownloaded?: boolean };
 
 const root = document.getElementById("app")!;
 let view: View = { kind: "loading" };
+
+// chrome.storage.local key for the most recent recording's id. Lets the popup
+// resume its processing/skill view if the user closes the popup mid-wait.
+const RECENT_KEY = "scout:recent_recording_id";
 
 async function init(): Promise<void> {
   const sb = getSupabase();
@@ -24,8 +31,40 @@ async function init(): Promise<void> {
     return render();
   }
   const { state } = (await chrome.runtime.sendMessage({ type: "popup:get_state" } satisfies RuntimeMessage)) ?? {};
-  if (state) view = { kind: "recording", state };
-  else view = { kind: "idle", tab: "record" };
+  if (state) {
+    view = { kind: "recording", state };
+    return render();
+  }
+  // No active recording — but maybe one just finished and the user reopened
+  // the popup to see the result. Pick up the most recent one if its status
+  // suggests it still needs the user's attention.
+  const stored = await chrome.storage.local.get(RECENT_KEY);
+  const recentId = stored[RECENT_KEY] as string | undefined;
+  if (recentId) {
+    const { data: rec } = await sb.from("recordings").select("*, skills(*)").eq("id", recentId).single();
+    if (rec) {
+      const skills = (rec as RecordingRow & { skills?: SkillRow[] }).skills ?? [];
+      const newest = skills.length ? [...skills].sort((a, b) => b.version - a.version)[0] : null;
+      if (newest) {
+        view = { kind: "skill", recording: rec as RecordingRow, skill: newest };
+        return render();
+      }
+      if (rec.status === "uploading" || rec.status === "transcribing") {
+        view = { kind: "processing", recording: rec as RecordingRow, stage: rec.status as "uploading" | "transcribing" };
+        render();
+        void runAutoGenerate(rec as RecordingRow);
+        return;
+      }
+      if (rec.status === "ready") {
+        // Transcribe done but no skill yet — kick off generation.
+        view = { kind: "processing", recording: rec as RecordingRow, stage: "drafting" };
+        render();
+        void runAutoGenerate(rec as RecordingRow);
+        return;
+      }
+    }
+  }
+  view = { kind: "idle", tab: "record" };
   render();
 }
 
@@ -48,9 +87,13 @@ function render(): void {
       wrap.appendChild(header(null));
       wrap.appendChild(recordingView(view.state));
       break;
+    case "processing":
+      wrap.appendChild(header(null));
+      wrap.appendChild(processingView(view.recording, view.stage, view.error));
+      break;
     case "skill":
       wrap.appendChild(header(null));
-      wrap.appendChild(skillView(view.recording, view.skill));
+      wrap.appendChild(skillView(view.recording, view.skill, view.autoDownloaded));
       break;
   }
   root.appendChild(wrap);
@@ -100,50 +143,63 @@ function loadingView(): HTMLElement {
 
 // ---- Auth ----
 
-function signedOutView(mode: "signin" | "signup"): HTMLElement {
+function signedOutView(_mode: "signin" | "signup"): HTMLElement {
   const d = document.createElement("div");
   d.className = "flex-1 flex flex-col items-center justify-center px-7 gap-2.5 text-center min-h-[480px]";
-  const isSignup = mode === "signup";
-  const cta = isSignup ? "Create account" : "Sign in";
-  const altLabel = isSignup ? "Already have an account? Sign in" : "New here? Create an account";
+  // Single unified form: tries sign-in first, falls back to sign-up if the
+  // user doesn't exist. The user shouldn't have to know whether they have
+  // an account — they have an email + password, that's enough.
   d.innerHTML = `
     <div class="display text-[44px] mb-1" style="color:#E4AF7A;">SCOUT</div>
     <div class="label mb-3" style="color:#B68039;">By Orage AI</div>
     <p class="text-[13px] leading-relaxed mb-4" style="color:rgba(255,232,199,0.65); max-width:280px;">Capture human workflows. Generate skill files for AI agents.</p>
     <div class="glass w-full p-4 flex flex-col gap-2.5">
       <input id="email" type="email" autocomplete="email" placeholder="you@company.com" class="input" />
-      <input id="pw" type="password" autocomplete="${isSignup ? "new-password" : "current-password"}" placeholder="Password (min 8 chars)" class="input" />
-      <button id="go" class="btn btn-primary w-full mt-1">${cta}</button>
+      <input id="pw" type="password" autocomplete="current-password" placeholder="Password (min 8 chars)" class="input" />
+      <button id="go" class="btn btn-primary w-full mt-1">Continue</button>
     </div>
-    <button id="alt" class="btn btn-ghost mt-2 text-xs">${altLabel}</button>
+    <p class="text-[10px] mt-2" style="color:rgba(255,232,199,0.4);">New here? We'll create your account automatically.</p>
     <p id="err" class="text-xs mt-1" style="color:#DC2626;"></p>
   `;
   const emailEl = d.querySelector<HTMLInputElement>("#email")!;
   const pwEl = d.querySelector<HTMLInputElement>("#pw")!;
   const errEl = d.querySelector<HTMLParagraphElement>("#err")!;
+  const goBtn = d.querySelector<HTMLButtonElement>("#go")!;
   const submit = async () => {
     const email = emailEl.value.trim();
     const password = pwEl.value;
     if (!email) { errEl.textContent = "Enter your email."; return; }
     if (password.length < 8) { errEl.textContent = "Password must be at least 8 characters."; return; }
     errEl.textContent = "";
+    goBtn.disabled = true;
+    goBtn.textContent = "Signing in…";
     try {
       const sb = getSupabase();
-      const { error } = isSignup
-        ? await sb.auth.signUp({ email, password })
-        : await sb.auth.signInWithPassword({ email, password });
-      if (error) throw error;
+      // Try sign-in first.
+      let { error } = await sb.auth.signInWithPassword({ email, password });
+      if (error) {
+        const msg = String(error.message || "").toLowerCase();
+        // "Invalid login credentials" is what Supabase returns for both
+        // wrong password AND non-existent user. Try sign-up; if THAT
+        // fails with "already registered", we know the password was wrong.
+        if (msg.includes("invalid") || msg.includes("not found")) {
+          goBtn.textContent = "Creating account…";
+          const su = await sb.auth.signUp({ email, password });
+          if (su.error) throw new Error(su.error.message);
+        } else {
+          throw error;
+        }
+      }
       // onAuthStateChange flips the view to idle.
     } catch (e) {
       errEl.textContent = String((e as Error).message ?? e);
+      goBtn.disabled = false;
+      goBtn.textContent = "Continue";
     }
   };
-  d.querySelector<HTMLButtonElement>("#go")!.onclick = () => void submit();
+  goBtn.onclick = () => void submit();
   pwEl.onkeydown = (e) => { if (e.key === "Enter") void submit(); };
-  d.querySelector<HTMLButtonElement>("#alt")!.onclick = () => {
-    view = { kind: "signed_out", mode: isSignup ? "signin" : "signup" };
-    render();
-  };
+  emailEl.onkeydown = (e) => { if (e.key === "Enter") pwEl.focus(); };
   return d;
 }
 
@@ -336,27 +392,126 @@ function recordingView(s: RecordingSessionState): HTMLElement {
   };
   d.querySelector<HTMLButtonElement>("#stop")!.onclick = async () => {
     const recordingId = s.recording_id;
+    // Persist so re-opening the popup picks up where we left off.
+    await chrome.storage.local.set({ [RECENT_KEY]: recordingId });
     await chrome.runtime.sendMessage({ type: "popup:stop_recording" } satisfies RuntimeMessage);
-    // Pull the freshly-updated recording row (status is now 'uploading' or
-    // later) and drop straight into the skill view. Generate Skill is
-    // available immediately even before transcribe finishes — events are
-    // already flushed.
     const sb = getSupabase();
     const { data: rec } = await sb.from("recordings").select("*").eq("id", recordingId).single();
     if (rec) {
-      view = { kind: "skill", recording: rec as RecordingRow, skill: null };
+      view = { kind: "processing", recording: rec as RecordingRow, stage: "uploading" };
+      render();
+      void runAutoGenerate(rec as RecordingRow);
     } else {
-      // Edge case: row vanished. Fall back to library so the user has a path.
       view = { kind: "idle", tab: "library" };
+      render();
+    }
+  };
+  return d;
+}
+
+// Auto-generate flow: poll the recording row through its statuses, then call
+// /generate-skill. Updates the popup's stage label as we go.
+async function runAutoGenerate(rec: RecordingRow): Promise<void> {
+  const sb = getSupabase();
+  const deadline = Date.now() + 180_000;
+  // Phase 1 — wait for status='ready' (transcribe finished).
+  while (Date.now() < deadline) {
+    const { data } = await sb.from("recordings").select("status").eq("id", rec.id).single();
+    const status = data?.status as string | undefined;
+    if (view.kind !== "processing" || view.recording.id !== rec.id) return;
+    if (status === "uploading") view.stage = "uploading";
+    else if (status === "transcribing") view.stage = "transcribing";
+    else if (status === "ready") break;
+    else if (status === "failed") {
+      view.error = "Recording failed during upload or transcription.";
+      render();
+      return;
     }
     render();
-  };
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  if (view.kind !== "processing" || view.recording.id !== rec.id) return;
+
+  // Phase 2 — generate the skill.
+  view.stage = "drafting";
+  render();
+  try {
+    const { data: sess } = await sb.auth.getSession();
+    const res = await fetch(functionUrl("generate-skill"), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+      },
+      body: JSON.stringify({ recording_id: rec.id }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+    const skill = (await res.json()) as SkillRow;
+    const { data: refreshed } = await sb.from("recordings").select("*").eq("id", rec.id).single();
+    if (view.kind === "processing" && view.recording.id === rec.id) {
+      // Auto-download the Claude Code skill zip the moment it's ready.
+      // The user came here for the skill — give it to them without an extra click.
+      try { downloadClaudeSkill(skill); } catch (e) { console.warn("[scout] auto-download failed", e); }
+      view = { kind: "skill", recording: (refreshed as RecordingRow) ?? rec, skill, autoDownloaded: true };
+      render();
+    }
+  } catch (e) {
+    if (view.kind === "processing" && view.recording.id === rec.id) {
+      view.error = String((e as Error).message ?? e);
+      render();
+    }
+  }
+}
+
+function processingView(rec: RecordingRow, stage: "uploading" | "transcribing" | "drafting", error?: string): HTMLElement {
+  const d = document.createElement("div");
+  d.className = "flex-1 px-5 py-6 flex flex-col gap-4";
+  const stages: Array<{ id: typeof stage; label: string }> = [
+    { id: "uploading", label: "Uploading audio + screenshots" },
+    { id: "transcribing", label: "Transcribing narration" },
+    { id: "drafting", label: "Drafting your skill" },
+  ];
+  const currentIdx = stages.findIndex((s) => s.id === stage);
+  const stageHtml = stages
+    .map((s, i) => {
+      const done = i < currentIdx;
+      const active = i === currentIdx;
+      const dotColor = done ? "#15803D" : active ? "#E4AF7A" : "rgba(255,232,199,0.20)";
+      const dotInner = active ? `<span style="position:absolute;inset:0;border-radius:50%;border:2px solid #E4AF7A;animation:scout-spin 1.4s linear infinite;border-top-color:transparent;"></span>` : "";
+      const labelColor = done ? "rgba(255,232,199,0.75)" : active ? "#FFE8C7" : "rgba(255,232,199,0.35)";
+      return `
+        <div class="flex items-center gap-3">
+          <span style="position:relative;display:inline-block;width:14px;height:14px;border-radius:50%;background:${dotColor};">${dotInner}</span>
+          <span class="text-[13px]" style="color:${labelColor};">${s.label}</span>
+        </div>`;
+    })
+    .join("");
+  d.innerHTML = `
+    <div class="glass p-5">
+      <div class="display text-[16px] mb-1" style="color:#E4AF7A;">${error ? "Something went wrong" : "Finishing up"}</div>
+      <div class="text-[11px] mb-4" style="color:rgba(255,232,199,0.5);">${error ? "We saved your recording — you can retry from the library." : `${rec.duration_ms ? Math.round(rec.duration_ms/1000) + "s recording" : "Processing recording"} · this usually takes 30–60s`}</div>
+      ${error ? `<div class="text-[12px] glass-strong p-3 mb-3" style="color:#DC2626;">${escapeHtml(error)}</div>` : `<div class="flex flex-col gap-3">${stageHtml}</div>`}
+    </div>
+    ${error ? `<button id="back" class="btn">Back to Library</button>` : `
+      <div class="glass p-3 flex items-start gap-2.5">
+        <span style="color:#B68039;font-size:14px;flex-shrink:0;">⓵</span>
+        <div class="flex-1 text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.55);">
+          You can close this popup. We'll save the skill to your Downloads when it's ready, and the popup picks up here when you reopen it.
+        </div>
+      </div>`}
+  `;
+  if (error) {
+    d.querySelector<HTMLButtonElement>("#back")!.onclick = () => {
+      view = { kind: "idle", tab: "library" };
+      render();
+    };
+  }
   return d;
 }
 
 // ---- Skill side-panel view ----
 
-function skillView(rec: RecordingRow, skill: SkillRow | null): HTMLElement {
+function skillView(rec: RecordingRow, skill: SkillRow | null, autoDownloaded = false): HTMLElement {
   const d = document.createElement("div");
   d.className = "flex-1 px-5 py-4 overflow-y-auto";
 
@@ -364,6 +519,7 @@ function skillView(rec: RecordingRow, skill: SkillRow | null): HTMLElement {
   back.className = "btn btn-ghost mb-3";
   back.textContent = "← Library";
   back.onclick = () => {
+    void chrome.storage.local.remove(RECENT_KEY);
     view = { kind: "idle", tab: "library" };
     render();
   };
@@ -392,14 +548,34 @@ function skillView(rec: RecordingRow, skill: SkillRow | null): HTMLElement {
     return d;
   }
 
-  // Skill ready: render markdown + actions.
+  // Skill ready. If we just auto-downloaded, show a friendly confirmation
+  // banner above the actions so the user knows the zip is already in their
+  // Downloads folder.
+  if (autoDownloaded) {
+    const banner = document.createElement("div");
+    banner.className = "glass p-3 mb-3 flex items-center gap-2";
+    banner.style.borderColor = "rgba(21,128,61,0.45)";
+    banner.innerHTML = `
+      <span style="display:inline-flex;width:20px;height:20px;border-radius:50%;background:#15803D;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:bold;flex-shrink:0;">✓</span>
+      <div class="flex-1">
+        <div class="text-[12px] font-medium" style="color:#FFE8C7;">Saved to Downloads</div>
+        <div class="text-[10px]" style="color:rgba(255,232,199,0.55);">Extract the .zip into <code style="font-family:'JetBrains Mono',monospace;">~/.claude/skills/</code></div>
+      </div>
+    `;
+    d.appendChild(banner);
+  }
+
+  // The primary CTA is always "Save as Claude Code skill" — but if we already
+  // auto-downloaded once, demote it to a re-download button.
   const actions = document.createElement("div");
-  actions.className = "grid grid-cols-2 gap-2 mb-3";
+  actions.className = "flex flex-col gap-2 mb-3";
   actions.innerHTML = `
-    <button id="claude" class="btn btn-primary col-span-2">⬇ Save as Claude Code skill</button>
-    <button id="cp" class="btn">Copy</button>
-    <button id="dl" class="btn">Save .md</button>
-    <button id="rg" class="btn col-span-2">Regenerate</button>
+    <button id="claude" class="btn ${autoDownloaded ? "" : "btn-primary"} w-full">${autoDownloaded ? "Save again" : "⬇ Save as Claude Code skill"}</button>
+    <div class="grid grid-cols-3 gap-2">
+      <button id="cp" class="btn text-[11px]">Copy</button>
+      <button id="dl" class="btn text-[11px]">Save .md</button>
+      <button id="rg" class="btn text-[11px]">Regenerate</button>
+    </div>
   `;
   actions.querySelector<HTMLButtonElement>("#claude")!.onclick = () => downloadClaudeSkill(skill);
   actions.querySelector<HTMLButtonElement>("#dl")!.onclick = () => downloadMd(skill);
