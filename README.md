@@ -18,8 +18,21 @@ Privacy policy: <https://gist.github.com/Orage-Agency/788e7dcf7a0ec71c5e9bf74387
 ## Architecture
 
 - **Chrome MV3 extension** (`apps/extension`) — service worker (recording session manager), content scripts (per-tab event listeners), offscreen document (`MediaRecorder` for audio), popup UI.
-- **Supabase** — Postgres (events, recordings, skills), Storage (screenshots, audio, optional skill `.md`), Auth (magic link), Edge Functions.
+- **Two Supabase projects** (since v0.1.4):
+  - **Auth (universal)** — shared identity hub across Orage apps. Owns `auth.users` and the session lifecycle. The extension calls `signIn` / `signUp` / `signOut` here.
+  - **Data (Scout)** — owns `recordings`, `events`, `skills`, storage buckets, and the three Edge Functions. Receives the access token issued by the auth project.
 - **Anthropic API** — called only from Edge Functions. The extension never holds the key.
+
+### Universal login (optional)
+
+The extension uses two Supabase clients (`getAuthSupabase()` and `getDataSupabase()` in `apps/extension/src/lib/supabase.ts`). The auth client owns the session; the data client mirrors it via `setSession()` whenever auth state changes.
+
+**Single-project mode (default)** — leave `VITE_AUTH_SUPABASE_*` blank in `.env`. Both clients point at the data project; users live in the data project's `auth.users`; RLS works natively. This is what Scout v0.1.4 ships with today.
+
+**Dual-project mode** — set `VITE_AUTH_SUPABASE_URL` and `VITE_AUTH_SUPABASE_ANON_KEY` to a separate "universal" Supabase project. Other Orage apps point at the same auth project so a single login works everywhere. Three additional steps required:
+1. Copy the **JWT Secret** from the auth project (Settings → API → JWT Settings) into the data project's JWT Secret field. Without this, every data-project query returns 401.
+2. Apply migration `0002_universal_auth.sql` against the data project — drops FKs from `recordings/events/skills/profiles → auth.users` (the universal user UUIDs are foreign to the data project's `auth.users`) and removes the local signup trigger.
+3. Set Edge Function secrets `AUTH_SUPABASE_URL` and `AUTH_SUPABASE_ANON_KEY` so the functions verify caller identity against the auth project.
 
 ## Setup (one-time, ~5 minutes)
 
@@ -42,10 +55,14 @@ If the [Supabase MCP](https://supabase.com/docs/guides/getting-started/mcp) is c
 cp .env.example .env
 # Then fill in:
 #   SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY,
-#   SUPABASE_DB_PASSWORD, SUPABASE_PROJECT_REF
-#   VITE_SUPABASE_URL (= SUPABASE_URL)
-#   VITE_SUPABASE_ANON_KEY (= SUPABASE_ANON_KEY)
+#   SUPABASE_DB_PASSWORD, SUPABASE_PROJECT_REF              (data project)
+#   VITE_SUPABASE_URL (= SUPABASE_URL)                      (data project)
+#   VITE_SUPABASE_ANON_KEY (= SUPABASE_ANON_KEY)            (data project)
+#   VITE_AUTH_SUPABASE_URL                                  (universal auth project)
+#   VITE_AUTH_SUPABASE_ANON_KEY                             (universal auth project)
 ```
+
+Then in the Supabase dashboard, copy the **JWT Secret** from the auth project (Settings → API) and paste it into the data project's JWT Secret field. The data project will now accept tokens minted by the auth project.
 
 ### 3. Apply the database schema
 
@@ -53,13 +70,20 @@ cp .env.example .env
 pnpm install
 pnpm exec supabase login                    # interactive — opens browser
 pnpm exec supabase link --project-ref <ref>
-pnpm exec supabase db push                  # applies supabase/migrations/0001_initial.sql
+pnpm exec supabase db push                  # applies migrations 0001_initial.sql + 0002_universal_auth.sql
 ```
 
-### 4. Set the Anthropic key as an Edge Function secret
+### 4. Set the Edge Function secrets
 
 ```bash
-pnpm exec supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+# OpenRouter key (Edge Functions route LLM calls through OpenRouter).
+pnpm exec supabase secrets set OPENROUTER_API_KEY=sk-or-v1-...
+
+# Universal auth project URL + anon key. Edge Functions verify caller
+# identity against this project (since v0.1.4) — without these, every
+# function returns 401.
+pnpm exec supabase secrets set AUTH_SUPABASE_URL=https://YOUR_AUTH_PROJECT_REF.supabase.co
+pnpm exec supabase secrets set AUTH_SUPABASE_ANON_KEY=...
 ```
 
 ### 5. Deploy the Edge Functions

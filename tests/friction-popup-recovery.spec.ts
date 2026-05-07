@@ -32,9 +32,7 @@ test("popup recovery: close mid-wait + reopen lands on skill", async () => {
   test.setTimeout(360_000);
   if (fs.existsSync(PROFILE)) fs.rmSync(PROFILE, { recursive: true, force: true });
 
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = adminAuthClient();
 
   const server = http.createServer((_r, res) => { res.setHeader("content-type", "text/html"); res.end(FIXTURE); });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));

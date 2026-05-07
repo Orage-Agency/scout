@@ -2,7 +2,7 @@
 // MV3 service workers can shut down on inactivity; we persist state in
 // chrome.storage.session so the worker can rehydrate transparently.
 
-import { getSupabase, functionUrl } from "../lib/supabase";
+import { getAuthSupabase, getDataSupabase, functionUrl } from "../lib/supabase";
 import type {
   CapturedEvent,
   RecordingRow,
@@ -51,8 +51,9 @@ async function saveSession(s: RecordingSessionState | null): Promise<void> {
 // ---- Recording lifecycle ----
 
 async function startRecording(): Promise<RecordingSessionState | null> {
-  const sb = getSupabase();
-  const { data: auth } = await sb.auth.getUser();
+  const authClient = getAuthSupabase();
+  const db = getDataSupabase();
+  const { data: auth } = await authClient.auth.getUser();
   if (!auth.user) {
     console.warn("[scout] start_recording: not authenticated");
     return null;
@@ -61,7 +62,7 @@ async function startRecording(): Promise<RecordingSessionState | null> {
   // Create the recording row first so we have a stable id for storage paths.
   const recordingId = uuid();
   const startedAtMs = Date.now();
-  const { error } = await sb
+  const { error } = await db
     .from("recordings")
     .insert({
       id: recordingId,
@@ -136,13 +137,13 @@ async function stopRecording(): Promise<void> {
   // Serialize the audio finalize so onAudioDone runs to completion BEFORE we
   // clear the session and exit. Otherwise the parallel 'uploading' update
   // here can overwrite the 'transcribing' update from onAudioDone.
-  const sb = getSupabase();
+  const db = getDataSupabase();
   const endedAt = Date.now();
   const durationMs = endedAt - state.started_at - state.paused_ms;
 
   // 1. Mark the row as ended + uploading. Single atomic update; no further
   //    writes happen here.
-  await sb
+  await db
     .from("recordings")
     .update({
       status: "uploading",
@@ -398,7 +399,7 @@ async function flushBuffer(): Promise<void> {
 
 async function uploadEvents(batch: CapturedEvent[]): Promise<void> {
   if (!batch.length) return;
-  const sb = getSupabase();
+  const db = getDataSupabase();
 
   // 1. Upload screenshots to Storage in parallel.
   await Promise.all(
@@ -406,7 +407,7 @@ async function uploadEvents(batch: CapturedEvent[]): Promise<void> {
       if (ev._screenshotDataUrl && ev.screenshot_path) {
         try {
           const blob = dataUrlToBlob(ev._screenshotDataUrl);
-          const { error } = await sb.storage
+          const { error } = await db.storage
             .from("screenshots")
             .upload(ev.screenshot_path, blob, { contentType: "image/jpeg", upsert: true });
           if (error) throw error;
@@ -432,7 +433,7 @@ async function uploadEvents(batch: CapturedEvent[]): Promise<void> {
     data: ev.data,
     screenshot_path: ev.screenshot_path,
   }));
-  const { error } = await sb.from("events").insert(rows);
+  const { error } = await db.from("events").insert(rows);
   if (error) throw error;
 }
 
@@ -465,8 +466,9 @@ async function runCoachCycle(): Promise<void> {
   console.log(`[scout] coach: calling /coach with ${recentEvents.length} events`);
 
   try {
-    const sb = getSupabase();
-    const { data: sess } = await sb.auth.getSession();
+    const authClient = getAuthSupabase();
+    const db = getDataSupabase();
+    const { data: sess } = await authClient.auth.getSession();
     if (!sess.session) return;
 
     const res = await fetch(functionUrl("coach"), {
@@ -494,7 +496,7 @@ async function runCoachCycle(): Promise<void> {
       await chrome.tabs.sendMessage(tab.id, { type: "content:show_toast", ask: body.ask } satisfies RuntimeMessage).catch(() => {});
     }
     // Log to coach_log.
-    await sb.from("coach_log").insert({
+    await db.from("coach_log").insert({
       recording_id: state.recording_id,
       asked_at_ms: Date.now() - state.started_at,
       ask_text: body.ask,
@@ -541,13 +543,14 @@ async function sendToOffscreen(msg: RuntimeMessage): Promise<void> {
 async function onAudioDone(bytesB64: string, byteLength: number, mimeType: string): Promise<void> {
   const state = await loadSession();
   // The session might already be cleared (stop happened seconds ago) — still upload.
-  const sb = getSupabase();
-  const { data: auth } = await sb.auth.getUser();
+  const authClient = getAuthSupabase();
+  const db = getDataSupabase();
+  const { data: auth } = await authClient.auth.getUser();
   const userId = state?.user_id ?? auth.user?.id;
   // Look up the most recent uploading recording if no session.
   let recordingId = state?.recording_id;
   if (!recordingId && userId) {
-    const { data } = await sb
+    const { data } = await db
       .from("recordings")
       .select("id")
       .eq("user_id", userId)
@@ -571,7 +574,7 @@ async function onAudioDone(bytesB64: string, byteLength: number, mimeType: strin
   // Skip the upload and let transcribe short-circuit on a null audio_path.
   if (!bytes || bytes.byteLength === 0 || !mimeType) {
     console.log("[scout] audio_done with no bytes — going straight to transcribe", recordingId);
-    await sb.from("recordings").update({ audio_path: null, status: "transcribing" }).eq("id", recordingId);
+    await db.from("recordings").update({ audio_path: null, status: "transcribing" }).eq("id", recordingId);
     broadcastRecordingChanged(recordingId, "transcribing");
     await closeOffscreen();
     try {
@@ -588,19 +591,19 @@ async function onAudioDone(bytesB64: string, byteLength: number, mimeType: strin
 
   const ext = mimeType.includes("ogg") ? "ogg" : "webm";
   const path = `${userId}/${recordingId}.${ext}`;
-  const { error } = await sb.storage
+  const { error } = await db.storage
     .from("audio")
     .upload(path, new Blob([bytes as BlobPart], { type: mimeType }), { contentType: mimeType, upsert: true });
   if (error) {
     console.error("[scout] audio upload failed", error);
-    await sb.from("recordings").update({ status: "failed" }).eq("id", recordingId);
+    await db.from("recordings").update({ status: "failed" }).eq("id", recordingId);
     broadcastRecordingChanged(recordingId, "failed");
     await closeOffscreen();
     audioDoneWaiters.get(recordingId)?.();
     return;
   }
 
-  await sb.from("recordings").update({ audio_path: path, status: "transcribing" }).eq("id", recordingId);
+  await db.from("recordings").update({ audio_path: path, status: "transcribing" }).eq("id", recordingId);
   broadcastRecordingChanged(recordingId, "transcribing");
   await closeOffscreen();
 
@@ -622,8 +625,8 @@ function base64ToUint8(b64: string): Uint8Array {
 }
 
 async function triggerTranscribe(recordingId: string): Promise<void> {
-  const sb = getSupabase();
-  const { data: sess } = await sb.auth.getSession();
+  const authClient = getAuthSupabase();
+  const { data: sess } = await authClient.auth.getSession();
   if (!sess.session) throw new Error("not authenticated");
   const res = await fetch(functionUrl("transcribe"), {
     method: "POST",

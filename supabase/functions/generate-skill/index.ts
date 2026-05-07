@@ -2,7 +2,7 @@
 // to produce a SKILL.md, persist it. Per §10.
 
 import { callLLM, MODEL_SKILL } from "../_shared/llm.ts";
-import { adminClient, corsHeaders, userClient } from "../_shared/supabase.ts";
+import { adminClient, corsHeaders, verifyAuthUser } from "../_shared/supabase.ts";
 
 const SYSTEM = `You will produce a SKILL.md file from a recorded human workflow.
 An AI agent will read this file later and execute the task.
@@ -29,6 +29,37 @@ this skill vs. a different one?>
 <What information the agent needs before starting. Inferred from
 what the human had to know.>
 
+## Input examples
+<For each {variable} declared below, give one realistic example value the
+agent might receive. Format as a fenced JSON block (use three backticks
+followed by "json"):
+
+\`\`\`json
+{ "variable_name": "example value" }
+\`\`\`
+
+This lets a future agent run the skill with sample inputs end-to-end. If
+the workflow takes no inputs (Variables section says "(none)"), emit an
+empty JSON object {} here.>
+
+## Variables
+<List ONLY the variables you actually reference as {placeholders} in the
+Steps or Faster path sections below. Do not declare a variable you don't
+use. Format each as:
+  - {snake_case_name}: <description> (example: <value seen in recording>)
+
+If the workflow takes no inputs (e.g., "archive all promotions"), write
+exactly: "(none — this skill runs without parameters)" and skip directly
+to Steps without inserting any placeholders.
+
+Rules:
+ - Replace the recorded example values with {snake_case_name} only when
+   that value would genuinely change on a new run.
+ - Constants (your own company name, fixed approver email) stay literal.
+ - Prefer fewer variables: if three values always travel together
+   (contact_name, contact_company, contact_email), pick the one the
+   agent will actually need (usually contact_email) and drop the rest.>
+
 ## Steps
 <Numbered list. Each step:
  - Describes the action in plain English (NOT 'click pixel 423,180')
@@ -37,6 +68,29 @@ what the human had to know.>
  - Describes the visible UI state in prose if it disambiguates the step
  - DO NOT embed image references like ![](step_3.png). The SKILL.md is
    text-only. Screenshots are available to the agent separately.>
+
+## Faster path
+<Analyze the workflow and propose a faster automated equivalent that
+produces the SAME end result. CRITICAL: identify the service from the
+domain in the recorded URLs (e.g., resend.com → Resend, hubspot.com →
+HubSpot, app.hypefury.com → Hypefury). Use ONLY that service's API/CLI
+— do not substitute a well-known alternative (e.g., do not propose
+Mailchimp when the recording shows Resend). If the service has no
+public API and no MCP, say so and suggest the Playwright MCP as a UI
+automation fallback. Then suggest:
+ - REST API calls (with HTTP method, endpoint, key params)
+ - CLI commands (gh, supabase, vercel, gcloud, etc.)
+ - MCP tool calls (if the service has a known MCP server: Notion, Linear,
+   GitHub, Slack, Gmail, Google Calendar/Drive, Vercel, Supabase, Figma,
+   Canva, n8n, Playwright)
+ - Library/SDK calls (when an API is the right unit of work)
+The cloud runtime that executes this skill will prefer this path over the
+manual UI steps when the inputs allow it. Be specific — give the actual
+endpoint, command, or tool name. If a step truly has no programmatic
+equivalent (e.g., a captcha, a human approval), say so explicitly.
+If the entire workflow is genuinely UI-only (no APIs/CLIs/MCPs apply),
+write 'No faster automated path. Run the manual Steps above.' Do not
+fabricate endpoints or invent CLIs that don't exist.>
 
 ## Decision rules
 <Captured from the user's narration and the coach's asks. Explicit
@@ -59,8 +113,7 @@ const MAX_SCREENSHOTS = 12;
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders() });
   try {
-    const sb = userClient(req.headers.get("authorization"));
-    const { data: { user } } = await sb.auth.getUser();
+    const user = await verifyAuthUser(req.headers.get("authorization"));
     if (!user) return json({ error: "unauthorized" }, 401);
 
     const { recording_id, extra } = (await req.json()) as GenReq;
@@ -122,7 +175,7 @@ SCREENSHOTS: ${images.length} attached as image blocks below.`;
     // deno-lint-ignore no-explicit-any
     const md = await callLLM({
       model: MODEL_SKILL,
-      max_tokens: 8000,
+      max_tokens: 3500,
       system: SYSTEM,
       temperature: 0.4,
       messages: [{ role: "user", content: content as any }],

@@ -3,7 +3,7 @@
 // worker after audio upload. Per §10.4.1.
 
 import { callLLM, MODEL_TRANSCRIBE } from "../_shared/llm.ts";
-import { adminClient, corsHeaders, userClient } from "../_shared/supabase.ts";
+import { adminClient, corsHeaders, verifyAuthUser } from "../_shared/supabase.ts";
 
 const SYSTEM = `Transcribe the provided audio recording. Return JSON only with this exact shape:
 {"segments":[{"start_ms": <int>, "end_ms": <int>, "text": "..."}]}
@@ -16,8 +16,7 @@ interface TranscribeReq {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders() });
   try {
-    const sb = userClient(req.headers.get("authorization"));
-    const { data: { user } } = await sb.auth.getUser();
+    const user = await verifyAuthUser(req.headers.get("authorization"));
     if (!user) return json({ error: "unauthorized" }, 401);
 
     const { recording_id } = (await req.json()) as TranscribeReq;

@@ -151,9 +151,7 @@ function kbArticle(): string {
 test("multi-tab: triage CRM + look up KB policy + approve", async () => {
   test.setTimeout(420_000);
 
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = adminAuthClient();
 
   await step("creating test user");
   const { data: created, error: cErr } = await admin.auth.admin.createUser({
@@ -165,9 +163,7 @@ test("multi-tab: triage CRM + look up KB policy + approve", async () => {
   const userId = created.user!.id;
   console.log(`    user ${TEST_EMAIL}`);
 
-  const userSb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const userSb = userAuthClient();
   const { data: signed } = await userSb.auth.signInWithPassword({
     email: TEST_EMAIL,
     password: TEST_PASSWORD,

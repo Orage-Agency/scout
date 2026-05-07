@@ -85,9 +85,7 @@ function queueHtml(): string {
 test("coach fires on ambiguous workflow", async () => {
   test.setTimeout(360_000);
 
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = adminAuthClient();
 
   await step("creating test user");
   const { data: created, error: cErr } = await admin.auth.admin.createUser({
@@ -98,9 +96,7 @@ test("coach fires on ambiguous workflow", async () => {
   if (cErr) throw cErr;
   const userId = created.user!.id;
 
-  const userSb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const userSb = userAuthClient();
   const { data: signed } = await userSb.auth.signInWithPassword({
     email: TEST_EMAIL,
     password: TEST_PASSWORD,

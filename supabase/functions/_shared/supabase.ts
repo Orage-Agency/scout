@@ -18,6 +18,34 @@ export function userClient(authHeader: string | null): SupabaseClient {
   });
 }
 
+// Verify the bearer token against the AUTH (universal) project. Since v0.1.4
+// users live in a separate Supabase project, we cannot validate the token
+// against THIS data project — its auth.users table doesn't have these rows.
+// We point getUser() at the auth project, which has the row and returns the
+// user. RLS in the data project still works because auth.uid() reads the
+// JWT's sub claim (which is project-agnostic as long as JWT secrets match).
+//
+// Returns the user, or null if the token is missing/invalid.
+export async function verifyAuthUser(authHeader: string | null): Promise<{ id: string; email?: string } | null> {
+  if (!authHeader) return null;
+  const url = Deno.env.get("AUTH_SUPABASE_URL");
+  const anon = Deno.env.get("AUTH_SUPABASE_ANON_KEY");
+  if (!url || !anon) {
+    // Backwards-compat: if the auth env isn't set, fall back to the data
+    // project (single-project mode). This preserves the old behaviour for
+    // anyone who hasn't migrated yet.
+    const sb = userClient(authHeader);
+    const { data } = await sb.auth.getUser();
+    return data.user ?? null;
+  }
+  const sb = createClient(url, anon, {
+    global: { headers: { Authorization: authHeader } },
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  const { data } = await sb.auth.getUser();
+  return data.user ?? null;
+}
+
 export function corsHeaders(): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": "*",

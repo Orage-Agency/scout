@@ -61,9 +61,7 @@ test("v0.1.2 full flow: redesigned signup + audio recording + skill download", a
   if (fs.existsSync(DOWNLOAD_DIR)) fs.rmSync(DOWNLOAD_DIR, { recursive: true, force: true });
   fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = adminAuthClient();
 
   // Local fixture server
   const server = http.createServer((_req, res) => {

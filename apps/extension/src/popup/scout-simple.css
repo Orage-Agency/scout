@@ -1,0 +1,147 @@
+/* ============================================================
+   Scout — UI simplification overrides (v0.1.4)
+   Loaded AFTER styles.css so these rules win.
+   Goal: cleaner, calmer, easier to read.
+   We only override visual rules — no layout/positioning changes —
+   so the popup keeps working exactly the same.
+   Ported from Scout-Prototype-1 / scout-v0_1_4.
+   ============================================================ */
+
+:root {
+  --scout-bg: #1a1a1c;
+  --scout-surface: #232326;
+  --scout-surface-2: #2a2a2e;
+  --scout-border: #3a3a3f;
+  --scout-text: #f3f4f6;
+  --scout-text-dim: #b3b3b8;
+  --scout-text-faint: #8a8a90;
+  --scout-accent: #e07b39;
+  --scout-accent-hover: #f08a48;
+  --scout-danger: #e25555;
+  --scout-success: #4ade80;
+}
+
+/* Body / popup canvas */
+html, body {
+  background: var(--scout-bg) !important;
+  color: var(--scout-text) !important;
+  font-family: 'Inter', 'Montserrat', system-ui, -apple-system, Segoe UI, sans-serif !important;
+}
+body {
+  width: 380px !important;
+  min-height: 480px !important;
+}
+
+/* Flatten the frosted-glass chrome — solid panels are easier on the eye. */
+.glass,
+.glass-strong {
+  background: var(--scout-surface) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border: 1px solid var(--scout-border) !important;
+  box-shadow: none !important;
+  border-radius: 10px !important;
+}
+
+/* Buttons — solid, high-contrast, predictable */
+.btn {
+  background: var(--scout-surface-2) !important;
+  border: 1px solid var(--scout-border) !important;
+  color: var(--scout-text) !important;
+  font-family: inherit !important;
+  font-weight: 500 !important;
+  letter-spacing: 0 !important;
+  padding: 10px 16px !important;
+  font-size: 14px !important;
+  border-radius: 8px !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  transition: background 0.12s ease, border-color 0.12s ease !important;
+}
+.btn:hover {
+  background: #34343a !important;
+  border-color: #4a4a50 !important;
+}
+
+.btn-primary {
+  background: var(--scout-accent) !important;
+  border-color: var(--scout-accent) !important;
+  color: #1a0e02 !important;
+  font-weight: 600 !important;
+  box-shadow: none !important;
+}
+.btn-primary:hover {
+  background: var(--scout-accent-hover) !important;
+  border-color: var(--scout-accent-hover) !important;
+}
+
+.btn-ghost {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: var(--scout-text-dim) !important;
+}
+.btn-ghost:hover {
+  background: var(--scout-surface-2) !important;
+  color: var(--scout-text) !important;
+}
+
+/* Labels — drop the all-caps Bebas Neue display feel for plain readable text */
+.label {
+  font-family: inherit !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em !important;
+  text-transform: none !important;
+  color: var(--scout-text-dim) !important;
+}
+
+/* Display headings — keep them prominent but readable, no condensed display font */
+.display {
+  font-family: inherit !important;
+  text-transform: none !important;
+  letter-spacing: -0.01em !important;
+  color: var(--scout-text) !important;
+  font-weight: 700 !important;
+}
+
+/* Text colors */
+.text-primary { color: var(--scout-text) !important; }
+.text-muted   { color: var(--scout-text-dim) !important; }
+.text-accent  { color: var(--scout-accent) !important; }
+
+/* Inputs — clean, full-width, generous padding */
+input, textarea {
+  background: var(--scout-surface-2) !important;
+  border: 1px solid var(--scout-border) !important;
+  color: var(--scout-text) !important;
+  border-radius: 8px !important;
+  padding: 10px 12px !important;
+  font-size: 14px !important;
+  font-family: inherit !important;
+  outline: none !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+}
+input::placeholder, textarea::placeholder {
+  color: var(--scout-text-faint) !important;
+}
+input:focus, textarea:focus {
+  border-color: var(--scout-accent) !important;
+}
+
+/* Kill the ambient orange glow ornaments by neutralising radial gradients
+   that the build inlines as background images on decorative wrappers. */
+[style*="radial-gradient"][style*="rgba(182,128,57"] {
+  background: transparent !important;
+}
+
+/* Slightly more breathing room in the main popup container */
+.bg-base {
+  background: var(--scout-bg) !important;
+}
+
+/* Make scrollbars unobtrusive */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--scout-border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #4a4a50; }

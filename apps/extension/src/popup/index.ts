@@ -1,7 +1,7 @@
 // Popup UI — vanilla TS rendering. Three tabs: Record, Library, Settings.
 // On open we hydrate from chrome.storage.session so the right state shows.
 
-import { getSupabase, functionUrl } from "../lib/supabase";
+import { getAuthSupabase, getDataSupabase, functionUrl } from "../lib/supabase";
 import type { RecordingRow, SkillRow, RecordingSessionState, RuntimeMessage } from "../lib/types";
 import { marked } from "marked";
 import { zipSync, strToU8 } from "fflate";
@@ -14,7 +14,7 @@ type View =
   // Single transitional state covering everything between Stop and Skill-Ready.
   // The popup shows a single staged progress UI; the user does nothing.
   | { kind: "processing"; recording: RecordingRow; stage: "uploading" | "transcribing" | "drafting"; error?: string }
-  | { kind: "skill"; recording: RecordingRow; skill: SkillRow | null; autoDownloaded?: boolean };
+  | { kind: "skill"; recording: RecordingRow; skill: SkillRow | null; allSkills?: SkillRow[]; autoDownloaded?: boolean };
 
 const root = document.getElementById("app")!;
 let view: View = { kind: "loading" };
@@ -23,13 +23,26 @@ let view: View = { kind: "loading" };
 // resume its processing/skill view if the user closes the popup mid-wait.
 const RECENT_KEY = "scout:recent_recording_id";
 
+// Cached role from the JWT app_metadata.role claim. "admin" means Orage; can
+// see all skills and download them. Anything else (including null) is "guest"
+// — the skill stays server-side, no download, no body shown.
+let currentRole: "admin" | "guest" = "guest";
+function isAdmin(): boolean { return currentRole === "admin"; }
+async function refreshRole(): Promise<void> {
+  const { data } = await getAuthSupabase().auth.getSession();
+  const claim = (data.session?.user?.app_metadata as { role?: string } | undefined)?.role;
+  currentRole = claim === "admin" ? "admin" : "guest";
+}
+
 async function init(): Promise<void> {
-  const sb = getSupabase();
-  const { data: sess } = await sb.auth.getSession();
+  const auth = getAuthSupabase();
+  const db = getDataSupabase();
+  const { data: sess } = await auth.auth.getSession();
   if (!sess.session) {
     view = { kind: "signed_out", mode: "signin" };
     return render();
   }
+  await refreshRole();
   const { state } = (await chrome.runtime.sendMessage({ type: "popup:get_state" } satisfies RuntimeMessage)) ?? {};
   if (state) {
     view = { kind: "recording", state };
@@ -41,12 +54,13 @@ async function init(): Promise<void> {
   const stored = await chrome.storage.local.get(RECENT_KEY);
   const recentId = stored[RECENT_KEY] as string | undefined;
   if (recentId) {
-    const { data: rec } = await sb.from("recordings").select("*, skills(*)").eq("id", recentId).single();
+    const { data: rec } = await db.from("recordings").select("*, skills(*)").eq("id", recentId).single();
     if (rec) {
       const skills = (rec as RecordingRow & { skills?: SkillRow[] }).skills ?? [];
-      const newest = skills.length ? [...skills].sort((a, b) => b.version - a.version)[0] : null;
+      const sorted = [...skills].sort((a, b) => b.version - a.version);
+      const newest = sorted[0] ?? null;
       if (newest) {
-        view = { kind: "skill", recording: rec as RecordingRow, skill: newest };
+        view = { kind: "skill", recording: rec as RecordingRow, skill: newest, allSkills: sorted };
         return render();
       }
       if (rec.status === "uploading" || rec.status === "transcribing") {
@@ -93,7 +107,7 @@ function render(): void {
       break;
     case "skill":
       wrap.appendChild(header(null));
-      wrap.appendChild(skillView(view.recording, view.skill, view.autoDownloaded));
+      wrap.appendChild(skillView(view.recording, view.skill, view.allSkills, view.autoDownloaded));
       break;
   }
   root.appendChild(wrap);
@@ -107,7 +121,7 @@ function header(active: "record" | "library" | "settings" | null): HTMLElement {
   h.innerHTML = `
     <div class="flex items-baseline gap-3">
       <span class="display text-[28px]" style="color:#E4AF7A;">SCOUT</span>
-      <span class="label" style="font-size:9px;">v0.1.3 · Orage AI</span>
+      <span class="label" style="font-size:9px;">v0.1.4 · Orage AI</span>
     </div>
     <div class="divider-gold"></div>
   `;
@@ -174,9 +188,9 @@ function signedOutView(_mode: "signin" | "signup"): HTMLElement {
     goBtn.disabled = true;
     goBtn.textContent = "Signing in…";
     try {
-      const sb = getSupabase();
+      const auth = getAuthSupabase();
       // Try sign-in first.
-      let { error } = await sb.auth.signInWithPassword({ email, password });
+      let { error } = await auth.auth.signInWithPassword({ email, password });
       if (error) {
         const msg = String(error.message || "").toLowerCase();
         // "Invalid login credentials" is what Supabase returns for both
@@ -184,7 +198,7 @@ function signedOutView(_mode: "signin" | "signup"): HTMLElement {
         // fails with "already registered", we know the password was wrong.
         if (msg.includes("invalid") || msg.includes("not found")) {
           goBtn.textContent = "Creating account…";
-          const su = await sb.auth.signUp({ email, password });
+          const su = await auth.auth.signUp({ email, password });
           if (su.error) throw new Error(su.error.message);
         } else {
           throw error;
@@ -264,8 +278,8 @@ function libraryTab(): HTMLElement {
 
 async function loadLibrary(container: HTMLDivElement): Promise<void> {
   container.innerHTML = `<div class="text-muted text-xs">Loading…</div>`;
-  const sb = getSupabase();
-  const { data, error } = await sb
+  const db = getDataSupabase();
+  const { data, error } = await db
     .from("recordings")
     .select("*, skills(id,version,title,created_at)")
     .order("started_at", { ascending: false })
@@ -302,7 +316,8 @@ async function loadLibrary(container: HTMLDivElement): Promise<void> {
       <div class="mt-2 text-[11px]" style="color:${hasSkill ? "#E4AF7A" : "rgba(255,232,199,0.4)"};">${hasSkill ? "✦ Skill ready" : "No skill yet"}</div>
     `;
     card.onclick = () => {
-      view = { kind: "skill", recording: r, skill: r.skills?.[0] ?? null };
+      const sorted = [...(r.skills ?? [])].sort((a, b) => b.version - a.version);
+      view = { kind: "skill", recording: r, skill: sorted[0] ?? null, allSkills: sorted };
       render();
     };
     container.appendChild(card);
@@ -331,20 +346,21 @@ function settingsTab(): HTMLElement {
       <p class="text-[11px] leading-relaxed mt-2" style="color:rgba(255,232,199,0.45);">Cascades through recordings, events, screenshots, audio, and skills. This cannot be undone.</p>
     </div>
   `;
-  const sb = getSupabase();
-  sb.auth.getUser().then(({ data }) => {
+  const auth = getAuthSupabase();
+  const db = getDataSupabase();
+  auth.auth.getUser().then(({ data }) => {
     d.querySelector<HTMLDivElement>("#who")!.textContent = data.user?.email ?? "—";
   });
   d.querySelector<HTMLButtonElement>("#signout")!.onclick = async () => {
-    await sb.auth.signOut();
+    await auth.auth.signOut();
     view = { kind: "signed_out", mode: "signin" };
     render();
   };
   d.querySelector<HTMLButtonElement>("#del")!.onclick = async () => {
     if (!confirm("Permanently delete all of your recordings and skills?")) return;
-    const { data: auth } = await sb.auth.getUser();
-    if (!auth.user) return;
-    await sb.from("recordings").delete().eq("user_id", auth.user.id);
+    const { data: u } = await auth.auth.getUser();
+    if (!u.user) return;
+    await db.from("recordings").delete().eq("user_id", u.user.id);
     alert("Deleted.");
   };
   return d;
@@ -395,8 +411,8 @@ function recordingView(s: RecordingSessionState): HTMLElement {
     // Persist so re-opening the popup picks up where we left off.
     await chrome.storage.local.set({ [RECENT_KEY]: recordingId });
     await chrome.runtime.sendMessage({ type: "popup:stop_recording" } satisfies RuntimeMessage);
-    const sb = getSupabase();
-    const { data: rec } = await sb.from("recordings").select("*").eq("id", recordingId).single();
+    const db = getDataSupabase();
+    const { data: rec } = await db.from("recordings").select("*").eq("id", recordingId).single();
     if (rec) {
       view = { kind: "processing", recording: rec as RecordingRow, stage: "uploading" };
       render();
@@ -412,11 +428,12 @@ function recordingView(s: RecordingSessionState): HTMLElement {
 // Auto-generate flow: poll the recording row through its statuses, then call
 // /generate-skill. Updates the popup's stage label as we go.
 async function runAutoGenerate(rec: RecordingRow): Promise<void> {
-  const sb = getSupabase();
+  const auth = getAuthSupabase();
+  const db = getDataSupabase();
   const deadline = Date.now() + 180_000;
   // Phase 1 — wait for status='ready' (transcribe finished).
   while (Date.now() < deadline) {
-    const { data } = await sb.from("recordings").select("status").eq("id", rec.id).single();
+    const { data } = await db.from("recordings").select("status").eq("id", rec.id).single();
     const status = data?.status as string | undefined;
     if (view.kind !== "processing" || view.recording.id !== rec.id) return;
     if (status === "uploading") view.stage = "uploading";
@@ -436,7 +453,7 @@ async function runAutoGenerate(rec: RecordingRow): Promise<void> {
   view.stage = "drafting";
   render();
   try {
-    const { data: sess } = await sb.auth.getSession();
+    const { data: sess } = await auth.auth.getSession();
     const res = await fetch(functionUrl("generate-skill"), {
       method: "POST",
       headers: {
@@ -447,12 +464,16 @@ async function runAutoGenerate(rec: RecordingRow): Promise<void> {
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
     const skill = (await res.json()) as SkillRow;
-    const { data: refreshed } = await sb.from("recordings").select("*").eq("id", rec.id).single();
+    const { data: refreshed } = await db.from("recordings").select("*").eq("id", rec.id).single();
     if (view.kind === "processing" && view.recording.id === rec.id) {
-      // Auto-download the Claude Code skill zip the moment it's ready.
-      // The user came here for the skill — give it to them without an extra click.
-      try { downloadClaudeSkill(skill); } catch (e) { console.warn("[scout] auto-download failed", e); }
-      view = { kind: "skill", recording: (refreshed as RecordingRow) ?? rec, skill, autoDownloaded: true };
+      // Auto-download only for admins — guests' skills stay server-side
+      // (Orage owns them and deploys hosted agents from them).
+      let autoDownloaded = false;
+      if (isAdmin()) {
+        try { downloadClaudeSkill(skill); autoDownloaded = true; }
+        catch (e) { console.warn("[scout] auto-download failed", e); }
+      }
+      view = { kind: "skill", recording: (refreshed as RecordingRow) ?? rec, skill, autoDownloaded };
       render();
     }
   } catch (e) {
@@ -511,7 +532,7 @@ function processingView(rec: RecordingRow, stage: "uploading" | "transcribing" |
 
 // ---- Skill side-panel view ----
 
-function skillView(rec: RecordingRow, skill: SkillRow | null, autoDownloaded = false): HTMLElement {
+function skillView(rec: RecordingRow, skill: SkillRow | null, allSkills: SkillRow[] = [], autoDownloaded = false): HTMLElement {
   const d = document.createElement("div");
   d.className = "flex-1 px-5 py-4 overflow-y-auto";
 
@@ -548,6 +569,39 @@ function skillView(rec: RecordingRow, skill: SkillRow | null, autoDownloaded = f
     return d;
   }
 
+  // Guest mode: skill exists but the user doesn't get to see, copy, or
+  // download it. Orage owns the skill and deploys it to their hosted agent.
+  if (!isAdmin()) {
+    const guestNote = document.createElement("div");
+    guestNote.className = "glass p-4";
+    guestNote.innerHTML = `
+      <div class="display text-[15px] mb-2" style="color:#E4AF7A;">Recording captured</div>
+      <div class="text-[12px] leading-relaxed" style="color:rgba(255,232,199,0.7);">Your Orage admin will turn this into a skill for your hosted agent. Nothing else for you to do here.</div>
+    `;
+    d.appendChild(guestNote);
+    return d;
+  }
+
+  // Version picker — only shown when there are 2+ versions and the viewer
+  // is admin (guests don't see skill content at all).
+  if (allSkills.length > 1) {
+    const picker = document.createElement("div");
+    picker.className = "flex flex-wrap gap-1.5 mb-3";
+    for (const v of allSkills) {
+      const pill = document.createElement("button");
+      const active = skill && v.id === skill.id;
+      pill.className = `tab-pill${active ? " active" : ""}`;
+      pill.textContent = `v${v.version}`;
+      pill.title = new Date(v.created_at).toLocaleString();
+      pill.onclick = () => {
+        view = { kind: "skill", recording: rec, skill: v, allSkills, autoDownloaded: false };
+        render();
+      };
+      picker.appendChild(pill);
+    }
+    d.appendChild(picker);
+  }
+
   // Skill ready. If we just auto-downloaded, show a friendly confirmation
   // banner above the actions so the user knows the zip is already in their
   // Downloads folder.
@@ -571,11 +625,13 @@ function skillView(rec: RecordingRow, skill: SkillRow | null, autoDownloaded = f
   actions.className = "flex flex-col gap-2 mb-3";
   actions.innerHTML = `
     <button id="claude" class="btn ${autoDownloaded ? "" : "btn-primary"} w-full">${autoDownloaded ? "Save again" : "⬇ Save as Claude Code skill"}</button>
+    <button id="dryrun" class="btn w-full">⚙ Test in cloud (dry-run)</button>
     <div class="grid grid-cols-3 gap-2">
       <button id="cp" class="btn text-[11px]">Copy</button>
       <button id="dl" class="btn text-[11px]">Save .md</button>
       <button id="rg" class="btn text-[11px]">Regenerate</button>
     </div>
+    <pre id="dryout" class="text-[10px] hidden whitespace-pre-wrap" style="background:rgba(0,0,0,0.5);padding:8px;border-radius:6px;color:rgba(255,232,199,0.8);max-height:200px;overflow-y:auto;"></pre>
   `;
   actions.querySelector<HTMLButtonElement>("#claude")!.onclick = () => downloadClaudeSkill(skill);
   actions.querySelector<HTMLButtonElement>("#dl")!.onclick = () => downloadMd(skill);
@@ -587,6 +643,7 @@ function skillView(rec: RecordingRow, skill: SkillRow | null, autoDownloaded = f
     const extra = prompt("Optional: extra guidance for regeneration", "");
     generate(rec.id, d, extra ?? undefined);
   };
+  actions.querySelector<HTMLButtonElement>("#dryrun")!.onclick = () => void runDryRun(skill, actions);
   d.appendChild(actions);
 
   // One-line install hint so the user knows where the zip goes.
@@ -644,8 +701,9 @@ async function generate(recordingId: string, container: HTMLElement, extra?: str
   const status = container.querySelector<HTMLDivElement>("#genstatus") ?? container;
   status.textContent = "Generating skill… this can take 30–60s.";
   try {
-    const sb = getSupabase();
-    const { data: sess } = await sb.auth.getSession();
+    const auth = getAuthSupabase();
+    const db = getDataSupabase();
+    const { data: sess } = await auth.auth.getSession();
     const res = await fetch(functionUrl("generate-skill"), {
       method: "POST",
       headers: {
@@ -657,11 +715,49 @@ async function generate(recordingId: string, container: HTMLElement, extra?: str
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
     const skill = (await res.json()) as SkillRow;
     // Refresh: load recording + skill into view.
-    const { data: rec } = await sb.from("recordings").select("*").eq("id", recordingId).single();
+    const { data: rec } = await db.from("recordings").select("*").eq("id", recordingId).single();
     view = { kind: "skill", recording: rec as RecordingRow, skill };
     render();
   } catch (e) {
     status.textContent = `Error: ${(e as Error).message}`;
+  }
+}
+
+// Send the skill to scout-runtime in dry-run mode. Returns the planner's
+// JSON plan without executing — useful for sanity-checking what the agent
+// will actually do before any HTTP side-effects happen.
+async function runDryRun(skill: SkillRow, container: HTMLElement): Promise<void> {
+  const out = container.querySelector<HTMLPreElement>("#dryout")!;
+  const btn = container.querySelector<HTMLButtonElement>("#dryrun")!;
+  const url = (import.meta.env.VITE_SCOUT_RUNTIME_URL as string | undefined)?.replace(/\/$/, "");
+  const key = import.meta.env.VITE_SCOUT_RUNTIME_KEY as string | undefined
+    ?? import.meta.env.VITE_SCOUT_RUNTIME_API_KEY as string | undefined;
+  if (!url || !key) {
+    out.classList.remove("hidden");
+    out.textContent = "scout-runtime not configured. Set VITE_SCOUT_RUNTIME_URL and VITE_SCOUT_RUNTIME_API_KEY in .env, then rebuild.";
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Planning…";
+  out.classList.remove("hidden");
+  out.textContent = "calling /api/run...";
+  const inputsRaw = prompt("Inputs JSON (or leave blank):", "{}");
+  let inputs: Record<string, unknown> = {};
+  try { inputs = inputsRaw ? JSON.parse(inputsRaw) : {}; }
+  catch { out.textContent = "Invalid JSON inputs."; btn.disabled = false; btn.textContent = "⚙ Test in cloud (dry-run)"; return; }
+  try {
+    const res = await fetch(`${url}/api/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-runtime-key": key },
+      body: JSON.stringify({ skill_id: skill.id, inputs, dry_run: true }),
+    });
+    const json = await res.json() as Record<string, unknown>;
+    out.textContent = JSON.stringify(json, null, 2);
+  } catch (e) {
+    out.textContent = `Error: ${(e as Error).message}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "⚙ Test in cloud (dry-run)";
   }
 }
 
@@ -715,8 +811,10 @@ function escapeHtml(s: string): string {
 void init();
 
 // Re-render if auth state flips (e.g. magic link click in another tab).
-const sb = getSupabase();
-sb.auth.onAuthStateChange((_evt, sess) => {
+const authClient = getAuthSupabase();
+// Initialise the data client too so the bridge installs and mirrors sessions.
+getDataSupabase();
+authClient.auth.onAuthStateChange((_evt, sess) => {
   if (!sess && view.kind !== "signed_out") {
     view = { kind: "signed_out", mode: "signin" };
     render();
@@ -765,17 +863,15 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage) => {
 });
 
 async function refreshSkillView(recordingId: string): Promise<void> {
-  const sb2 = getSupabase();
-  const { data: rec } = await sb2
+  const db = getDataSupabase();
+  const { data: rec } = await db
     .from("recordings")
     .select("*, skills(id,recording_id,user_id,version,title,body_md,prompt_used,created_at)")
     .eq("id", recordingId)
     .single();
   if (!rec) return;
   const skills = (rec as RecordingRow & { skills?: SkillRow[] }).skills ?? [];
-  const newest = skills.length
-    ? [...skills].sort((a, b) => b.version - a.version)[0]
-    : null;
-  view = { kind: "skill", recording: rec as RecordingRow, skill: newest };
+  const sorted = [...skills].sort((a, b) => b.version - a.version);
+  view = { kind: "skill", recording: rec as RecordingRow, skill: sorted[0] ?? null, allSkills: sorted };
   render();
 }

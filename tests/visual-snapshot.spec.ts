@@ -4,6 +4,7 @@
 
 import { test, expect, chromium } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
+import { adminAuthClient, adminDataClient, userAuthClient } from "./_helpers";
 import path from "node:path";
 import fs from "node:fs";
 
@@ -52,15 +53,12 @@ test("visual snapshot: every popup state", async () => {
   await popup.screenshot({ path: path.join(SCREENSHOTS, "02-signup.png"), fullPage: true });
 
   // Inject a real session so we can see the signed-in views.
-  const admin = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = adminAuthClient();
+  const adminData = adminDataClient();
   const email = `visual-${Date.now()}@scout-test.local`;
   const password = `Pass-${Date.now()}-Strong!`;
   const { data: user } = await admin.auth.admin.createUser({ email, password, email_confirm: true });
-  const userSb = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const userSb = userAuthClient();
   const { data: signed } = await userSb.auth.signInWithPassword({ email, password });
   await popup.evaluate(
     async ({ projectRef, sess }) => {
@@ -70,19 +68,19 @@ test("visual snapshot: every popup state", async () => {
   );
 
   // Insert a sample recording so the library has something to show.
-  await admin.from("recordings").insert({
+  await adminData.from("recordings").insert({
     user_id: user.user!.id,
     title: "Approve Small Refund",
     status: "ready",
     duration_ms: 65000,
     audio_path: `${user.user!.id}/sample.webm`,
   });
-  const { data: recRow } = await admin
+  const { data: recRow } = await adminData
     .from("recordings")
     .select("id")
     .eq("user_id", user.user!.id)
     .single();
-  await admin.from("skills").insert({
+  await adminData.from("skills").insert({
     recording_id: recRow!.id,
     user_id: user.user!.id,
     version: 1,

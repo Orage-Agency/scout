@@ -2,7 +2,7 @@
 // to ask the user a clarifying question. Default to silence. Per §9.
 
 import { callLLM, MODEL_COACH } from "../_shared/llm.ts";
-import { corsHeaders, userClient } from "../_shared/supabase.ts";
+import { corsHeaders, verifyAuthUser } from "../_shared/supabase.ts";
 
 const SYSTEM = `You are a quiet observer watching a person record a workflow.
 Your job is to ask AT MOST ONE short question that will make the
@@ -40,9 +40,8 @@ interface CoachReq {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders() });
   try {
-    // Auth gate: any logged-in user.
-    const sb = userClient(req.headers.get("authorization"));
-    const { data: { user } } = await sb.auth.getUser();
+    // Auth gate: any logged-in user. Verified against the universal auth project.
+    const user = await verifyAuthUser(req.headers.get("authorization"));
     if (!user) return json({ ask: null }, 401);
 
     const body = (await req.json()) as CoachReq;

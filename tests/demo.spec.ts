@@ -6,6 +6,7 @@
 
 import { test, expect, chromium, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
+import { adminAuthClient, userAuthClient } from "./_helpers";
 import path from "node:path";
 import fs from "node:fs";
 import http from "node:http";
@@ -40,9 +41,7 @@ async function step(label: string, ms = STEP_PAUSE): Promise<void> {
 test("watchable demo: full record -> skill flow", async () => {
   test.setTimeout(360_000);
 
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = adminAuthClient();
 
   await step("creating test user");
   const { data: created, error: cErr } = await admin.auth.admin.createUser({
@@ -55,9 +54,7 @@ test("watchable demo: full record -> skill flow", async () => {
   console.log(`    user ${TEST_EMAIL}`);
 
   await step("signing in to grab a session JWT");
-  const userSb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const userSb = userAuthClient();
   const { data: signed, error: sErr } = await userSb.auth.signInWithPassword({
     email: TEST_EMAIL,
     password: TEST_PASSWORD,

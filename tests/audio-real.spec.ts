@@ -53,9 +53,7 @@ test("real audio: narration -> transcript -> skill", async () => {
   test.setTimeout(360_000);
   if (!fs.existsSync(AUDIO_FILE)) throw new Error(`audio fixture missing at ${AUDIO_FILE}`);
 
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = adminAuthClient();
 
   await step("creating test user");
   const { data: created, error: cErr } = await admin.auth.admin.createUser({
@@ -66,9 +64,7 @@ test("real audio: narration -> transcript -> skill", async () => {
   if (cErr) throw cErr;
   const userId = created.user!.id;
 
-  const userSb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const userSb = userAuthClient();
   const { data: signed } = await userSb.auth.signInWithPassword({
     email: TEST_EMAIL,
     password: TEST_PASSWORD,

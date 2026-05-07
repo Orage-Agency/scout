@@ -12,6 +12,7 @@ import { test, expect, chromium, type BrowserContext } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
 import path from "node:path";
 import fs from "node:fs";
+import { adminAuthClient, adminDataClient } from "./_helpers";
 
 const EXT_DIR = path.resolve(__dirname, "../apps/extension/dist");
 
@@ -56,9 +57,8 @@ async function openSignedOutPopup(profileDir: string): Promise<{ ctx: BrowserCon
 
 test("email+password: signup, multi-device sign-in, RLS isolation", async () => {
   test.setTimeout(360_000);
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = adminAuthClient();
+  const adminData = adminDataClient();
 
   // ---------- Device 1: USER_A signs up ----------
   console.log(`\n[1/4] device 1 — USER_A signs up (${USER_A_EMAIL})`);
@@ -72,10 +72,14 @@ test("email+password: signup, multi-device sign-in, RLS isolation", async () => 
   console.log(`    ✓ signed up + auto-confirmed; landed on Start Recording`);
 
   // Insert a synthetic recording row for USER_A so we can later verify
-  // device 2 sees it and USER_B doesn't.
-  const { data: userA } = await admin.from("profiles").select("id").eq("email", USER_A_EMAIL).single();
-  const { error: insErr } = await admin.from("recordings").insert({
-    user_id: userA!.id,
+  // device 2 sees it and USER_B doesn't. Since v0.1.4 split auth into a
+  // separate project, look the user up via the auth admin API instead of
+  // the data project's now-empty profiles table.
+  const { data: usersList } = await admin.auth.admin.listUsers();
+  const userA = usersList.users.find((u) => u.email === USER_A_EMAIL);
+  if (!userA) throw new Error(`USER_A not found in auth project: ${USER_A_EMAIL}`);
+  const { error: insErr } = await adminData.from("recordings").insert({
+    user_id: userA.id,
     title: "Device-1 marker recording",
     status: "ready",
   });
@@ -113,8 +117,9 @@ test("email+password: signup, multi-device sign-in, RLS isolation", async () => 
 
   // ---------- Cleanup ----------
   console.log(`\n[4/4] cleanup`);
-  const { data: userB } = await admin.from("profiles").select("id").eq("email", USER_B_EMAIL).single();
-  await admin.auth.admin.deleteUser(userA!.id);
-  await admin.auth.admin.deleteUser(userB!.id);
+  const { data: usersList2 } = await admin.auth.admin.listUsers();
+  const userB = usersList2.users.find((u) => u.email === USER_B_EMAIL);
+  await admin.auth.admin.deleteUser(userA.id);
+  if (userB) await admin.auth.admin.deleteUser(userB.id);
   console.log(`    ✓ test users deleted`);
 });

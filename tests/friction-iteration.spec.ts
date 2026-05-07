@@ -54,9 +54,7 @@ test("friction iteration", async () => {
   if (!fs.existsSync(DOWNLOADS)) fs.mkdirSync(DOWNLOADS, { recursive: true });
   if (fs.existsSync(PROFILE)) fs.rmSync(PROFILE, { recursive: true, force: true });
 
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = adminAuthClient();
 
   const server = http.createServer((_req, res) => {
     res.setHeader("content-type", "text/html");

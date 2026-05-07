@@ -36,16 +36,12 @@ test("returning user: 2-click flow (record + stop)", async () => {
   if (!fs.existsSync(DOWNLOADS)) fs.mkdirSync(DOWNLOADS, { recursive: true });
   if (fs.existsSync(PROFILE)) fs.rmSync(PROFILE, { recursive: true, force: true });
 
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = adminAuthClient();
   // Pre-create user.
   const email = `returning-${Date.now()}@scout-test.local`;
   const password = `Pass-${Date.now()}-Strong!`;
   const { data: user } = await admin.auth.admin.createUser({ email, password, email_confirm: true });
-  const userSb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const userSb = userAuthClient();
   const { data: signed } = await userSb.auth.signInWithPassword({ email, password });
 
   const server = http.createServer((_r, res) => { res.setHeader("content-type", "text/html"); res.end(FIXTURE); });

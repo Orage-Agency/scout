@@ -4,6 +4,24 @@ Anything that stopped the autonomous build. Each entry: what, what was tried, wh
 
 ---
 
+## Open follow-ups (from 2026-05-07 v0.1.5 session)
+
+### Live transcription
+
+The coach currently calls `/coach` with `transcript_tail: ""` because we only transcribe at recording stop. Live transcription would make the coach dramatically smarter mid-recording.
+
+Approach: stop+restart the offscreen MediaRecorder every 5s (each window becomes an independently decodable webm). New edge function `transcribe-chunk` takes the chunk, transcribes via Gemini, returns text. Service worker maintains an in-memory rolling `liveTranscript` (~1500 chars) and passes it as `transcript_tail` to `/coach`.
+
+Why deferred: getting MediaRecorder framing right (each window must include the EBML header) needs careful testing across Chrome versions and audio devices — not worth a half-baked first cut.
+
+Files to touch: `apps/extension/src/offscreen/index.ts`, `apps/extension/src/background/index.ts`, new `supabase/functions/transcribe-chunk/index.ts`. `coach/index.ts` already accepts `transcript_tail`.
+
+### OCR-based screenshot redaction
+
+Visible on-screen PII gets captured raw today. Tesseract.js client-side (~3MB bundle) or a server-side Edge Function — privacy posture for guest-mode customer recordings depends on this being solved before any non-Orage testers touch real customer surfaces.
+
+---
+
 ## RESOLVED in 2026-05-02 resume session
 - B1 (Supabase): PAT minted via cached browser session, CLI linked, all three Edge Functions deployed.
 - B2 (`gh`): unused — created the GitHub repo via the dashboard, pushed via short-lived PAT minted after sudo-mode email-verify.

@@ -37,9 +37,7 @@ const TEST_PASSWORD = `Pass-${Date.now()}-Strong!`;
 test("end-to-end: sign in, record, generate skill", async () => {
   test.setTimeout(240_000);
 
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = adminAuthClient();
 
   // 1. Create test user with auto-confirmed email.
   const { data: created, error: cErr } = await admin.auth.admin.createUser({
@@ -52,9 +50,7 @@ test("end-to-end: sign in, record, generate skill", async () => {
   console.log(`[e2e] created user ${TEST_EMAIL} (${userId})`);
 
   // 2. Sign in as that user to grab a real session JWT.
-  const userSb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const userSb = userAuthClient();
   const { data: signed, error: sErr } = await userSb.auth.signInWithPassword({
     email: TEST_EMAIL,
     password: TEST_PASSWORD,
@@ -243,9 +239,7 @@ test("end-to-end: sign in, record, generate skill", async () => {
 test("pause/resume drops events while paused", async () => {
   test.setTimeout(120_000);
 
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = adminAuthClient();
   const email = `pause-${Date.now()}@scout-test.local`;
   const password = `Pass-${Date.now()}-Strong!`;
   const { data: created, error: cErr } = await admin.auth.admin.createUser({
@@ -254,9 +248,7 @@ test("pause/resume drops events while paused", async () => {
   if (cErr) throw cErr;
   const userId = created.user!.id;
 
-  const userSb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const userSb = userAuthClient();
   const { data: signed } = await userSb.auth.signInWithPassword({ email, password });
   const session = signed.session!;
 

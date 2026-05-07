@@ -61,17 +61,13 @@ test("01 — sign-in screen", async () => {
 test("02 — recording in progress", async () => {
   test.setTimeout(90_000);
   // Need a signed-in session for the recording view.
-  const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const admin = adminAuthClient();
   const email = `shot-${Date.now()}@scout-test.local`;
   const password = `Pass-${Date.now()}-X!`;
   const { data: created } = await admin.auth.admin.createUser({ email, password, email_confirm: true });
   const userId = created.user!.id;
 
-  const userSb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  const userSb = userAuthClient();
   const { data: signed } = await userSb.auth.signInWithPassword({ email, password });
   const session = signed.session!;
 
