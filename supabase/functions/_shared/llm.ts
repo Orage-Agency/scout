@@ -82,6 +82,7 @@ async function* streamAnthropic(req: LLMRequest, key: string): AsyncGenerator<st
       "content-type": "application/json",
       "x-api-key": key,
       "anthropic-version": ANTHROPIC_VERSION,
+      "anthropic-beta": "prompt-caching-2024-07-31",
     },
     body: JSON.stringify(body),
   });
@@ -173,6 +174,7 @@ async function callAnthropic(req: LLMRequest, key: string): Promise<string> {
       "content-type": "application/json",
       "x-api-key": key,
       "anthropic-version": ANTHROPIC_VERSION,
+      "anthropic-beta": "prompt-caching-2024-07-31",
     },
     body: JSON.stringify(body),
   });

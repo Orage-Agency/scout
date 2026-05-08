@@ -316,60 +316,48 @@ SCREENSHOTS: {{IMAGE_COUNT}} attached as image blocks below.`;
     // the streaming response immediately.
     (async () => {
       try {
-        // Start improvement immediately (non-streaming) so it runs in parallel
-        // while skill content streams to the client.
-        // deno-lint-ignore no-explicit-any
-        const improvementPromise = callLLM({
-          model: cfg.model,
-          max_tokens: cfg.max_tokens,
-          system: IMPROVEMENT_SYSTEM,
-          temperature: 0.4,
-          messages: [{ role: "user", content: buildContent("Now produce the CHANGE BRIEF from these materials.", imagesForImprovement) as any }],
-        });
+        const isImprovement = rec.mode === "improvement";
 
-        // Stream skill content chunk by chunk to the popup.
-        let skillMd = "";
+        // Stream the PRIMARY output — improvement brief for critique recordings,
+        // skill file for workflow recordings. This is what the user sees live.
+        let primaryMd = "";
         // deno-lint-ignore no-explicit-any
-        const skillStream = callLLMStream({
+        const primaryStream = callLLMStream({
           model: cfg.model,
           max_tokens: cfg.max_tokens,
-          system: SYSTEM,
+          system: isImprovement ? IMPROVEMENT_SYSTEM : SYSTEM,
           temperature: 0.4,
-          messages: [{ role: "user", content: buildContent("Now produce the SKILL.md from these materials.", imagesForSkill) as any }],
+          messages: [{ role: "user", content: buildContent(
+            isImprovement
+              ? "Now produce the CHANGE BRIEF from these materials."
+              : "Now produce the SKILL.md from these materials.",
+            isImprovement ? imagesForImprovement : imagesForSkill,
+          ) as any }],
         });
-        for await (const chunk of skillStream) {
-          skillMd += chunk;
+        for await (const chunk of primaryStream) {
+          primaryMd += chunk;
           await send({ type: "skill_chunk", text: chunk });
         }
 
-        // By the time skill streaming finishes, improvement is likely done.
-        const improvementMd = await improvementPromise;
+        const primaryTitle = (primaryMd.match(/^#\s+(.+)$/m)?.[1] ?? (isImprovement ? "Improvement brief" : "Skill")).trim();
+        const kind = isImprovement ? "improvement" as const : "skill" as const;
+        const promptUsed = isImprovement ? IMPROVEMENT_SYSTEM : SYSTEM;
 
-        const skillSlug  = (skillMd.match(/^name:\s*(.+)$/m)?.[1] ?? "skill").trim();
-        const skillTitle = (skillMd.match(/^#\s+(.+)$/m)?.[1] ?? skillSlug).trim();
-        const improvementTitle = (improvementMd.match(/^#\s+(.+)$/m)?.[1] ?? "Improvement brief").trim();
-
-        const { data: existingSkill } = await admin
+        const { data: existingRows } = await admin
           .from("skills").select("version")
-          .eq("recording_id", recording_id).eq("kind", "skill")
+          .eq("recording_id", recording_id).eq("kind", kind)
           .order("version", { ascending: false }).limit(1);
-        const { data: existingImprovement } = await admin
-          .from("skills").select("version")
-          .eq("recording_id", recording_id).eq("kind", "improvement")
-          .order("version", { ascending: false }).limit(1);
-        const skillVersion       = ((existingSkill?.[0]?.version as number | undefined) ?? 0) + 1;
-        const improvementVersion = ((existingImprovement?.[0]?.version as number | undefined) ?? 0) + 1;
+        const version = ((existingRows?.[0]?.version as number | undefined) ?? 0) + 1;
 
-        const inserts = [
-          { recording_id, user_id: user.id, version: skillVersion,       title: skillTitle,       body_md: skillMd,       kind: "skill"       as const, prompt_used: SYSTEM },
-          { recording_id, user_id: user.id, version: improvementVersion, title: improvementTitle, body_md: improvementMd, kind: "improvement" as const, prompt_used: IMPROVEMENT_SYSTEM },
+        // deno-lint-ignore no-explicit-any
+        const inserts: any[] = [
+          { recording_id, user_id: user.id, version, title: primaryTitle, body_md: primaryMd, kind, prompt_used: promptUsed },
         ];
+
         const { data: inserted, error: insErr } = await admin.from("skills").insert(inserts).select("*");
         if (insErr) { await send({ type: "error", message: insErr.message }); return; }
 
-        const primary = (inserted ?? []).find((r: { kind?: string }) =>
-          rec.mode === "improvement" ? r.kind === "improvement" : r.kind === "skill"
-        ) ?? (inserted ?? [])[0];
+        const primary = (inserted ?? [])[0];
 
         if (!rec.title && primary?.title) {
           await admin.from("recordings").update({ title: primary.title }).eq("id", recording_id);

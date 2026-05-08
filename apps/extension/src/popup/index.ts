@@ -424,8 +424,8 @@ function recordTab(): HTMLElement {
     modeSkillBtn.className   = `tab-pill${!isImprove ? " active" : ""} text-[10px]`;
     modeImproveBtn.className = `tab-pill${isImprove ? " active" : ""} text-[10px]`;
     blurb.innerHTML = isImprove
-      ? `Walk through the app. Call out what's broken. We generate <strong style="color:#E4AF7A;">both</strong> a Skill and an Improvements brief — this just opens Improvements first.`
-      : `Capture your workflow with narration. We generate <strong style="color:#E4AF7A;">both</strong> a Skill and an Improvements brief — this just opens Skill first.`;
+      ? `Walk through the app and call out what's broken. Generates an <strong style="color:#E4AF7A;">Improvements brief</strong> you can share with your team.`
+      : `Capture your workflow step-by-step. Generates a <strong style="color:#E4AF7A;">SKILL.md</strong> that an AI agent can replay autonomously.`;
   };
   void getRecordingMode().then(renderMode);
   modeSkillBtn.onclick   = async () => { await chrome.storage.local.set({ [MODE_PREF_KEY]: "skill" }); renderMode("skill"); };
@@ -839,7 +839,7 @@ function recordingView(s: RecordingSessionState): HTMLElement {
     <div class="glass-hero p-5 text-center">
       <div class="flex items-center justify-center gap-2.5 mb-3">
         <span class="record-dot"></span>
-        <span class="display text-[13px]" style="color:#E4AF7A;">Recording</span>
+        <span class="display text-[13px]" style="color:#E4AF7A;">${s.mode === "improvement" ? "Critiquing" : "Recording"}</span>
         ${audioBadge}
       </div>
       <div id="t" class="display text-[54px]" style="color:#FFE8C7;letter-spacing:0.04em;font-variant-numeric:tabular-nums;">00:00</div>
@@ -920,8 +920,8 @@ function recordingView(s: RecordingSessionState): HTMLElement {
   });
   observer.observe(root, { childList: true, subtree: true });
 
-  // Rotating narration tips
-  const TIPS = [
+  // Rotating narration tips — different sets per recording mode
+  const SKILL_TIPS = [
     "Say what you're doing as you do it — \"I'm clicking Add to move this to my queue\".",
     "Mention the why, not just the what — \"We always skip this field for EU contacts\".",
     "Note exceptions as you see them — \"If it's red, that means it needs approval first\".",
@@ -930,6 +930,16 @@ function recordingView(s: RecordingSessionState): HTMLElement {
     "Switch tabs freely — the gold border and timer follow you everywhere.",
     "Alt+Shift+R to stop recording without reopening the popup.",
   ];
+  const IMPROVEMENT_TIPS = [
+    "Say what you expected to happen, then show what actually happened.",
+    "Name the component or screen — \"This button on the Leads table doesn't…\"",
+    "Show error messages or loading states you think are wrong.",
+    "Call out confusion points — \"I always forget which tab this lives in\".",
+    "Narrate impact — \"This makes it impossible to submit without going back\".",
+    "Switch to any screen where the issue shows up — we follow you everywhere.",
+    "Alt+Shift+R to stop recording without reopening the popup.",
+  ];
+  const TIPS = s.mode === "improvement" ? IMPROVEMENT_TIPS : SKILL_TIPS;
   let tipIdx = 0;
   const tipEl = d.querySelector<HTMLDivElement>("#tip-text");
   const rotateTip = () => {
@@ -1147,11 +1157,13 @@ async function runAutoGenerate(rec: RecordingRow, extra?: string): Promise<void>
             if (bar) { bar.style.width = "100%"; if (pct) pct.textContent = "100%"; }
             await new Promise((r) => setTimeout(r, 500));
             const allSkills = (evt.all as SkillRow[] | undefined) ?? [evt as unknown as SkillRow];
-            const skillKindRow = allSkills.find(s => (s.kind ?? "skill") === "skill") ?? allSkills[0];
             let autoDownloaded = false;
             if (isAdmin()) {
-              try { downloadClaudeSkill(skillKindRow); autoDownloaded = true; }
-              catch (e) { console.warn("[scout] auto-download failed", e); }
+              const skillRow = allSkills.find(s => (s.kind ?? "skill") === "skill");
+              if (skillRow) {
+                try { downloadClaudeSkill(skillRow); autoDownloaded = true; }
+                catch (e) { console.warn("[scout] auto-download failed", e); }
+              }
             }
             const { data: refreshed } = await db.from("recordings").select("*").eq("id", rec.id).single();
             if (view.kind === "processing" && view.recording.id === rec.id) {
@@ -1177,11 +1189,13 @@ async function runAutoGenerate(rec: RecordingRow, extra?: string): Promise<void>
       const { data: refreshed } = await db.from("recordings").select("*").eq("id", rec.id).single();
       if (view.kind === "processing" && view.recording.id === rec.id) {
         const allFromResponse  = ((skill as SkillRow & { all?: SkillRow[] }).all ?? [skill]) as SkillRow[];
-        const skillKindRow     = allFromResponse.find(s => (s.kind ?? "skill") === "skill") ?? skill;
         let autoDownloaded = false;
         if (isAdmin()) {
-          try { downloadClaudeSkill(skillKindRow); autoDownloaded = true; }
-          catch (e) { console.warn("[scout] auto-download failed", e); }
+          const skillRow = allFromResponse.find(s => (s.kind ?? "skill") === "skill");
+          if (skillRow) {
+            try { downloadClaudeSkill(skillRow); autoDownloaded = true; }
+            catch (e) { console.warn("[scout] auto-download failed", e); }
+          }
         }
         const recMode    = (refreshed as RecordingRow | null)?.mode ?? rec.mode ?? "skill";
         const primaryRow = allFromResponse.find(s => (s.kind ?? "skill") === recMode) ?? allFromResponse[0];
@@ -1204,10 +1218,11 @@ function processingView(rec: RecordingRow, stage: "uploading" | "transcribing" |
   const d = document.createElement("div");
   d.className = "px-5 py-6 flex flex-col gap-4";
 
+  const isImprovementMode = rec.mode === "improvement";
   const stages: Array<{ id: typeof stage; label: string; sub: string }> = [
     { id: "uploading",   label: "Uploading",    sub: "audio + screenshots" },
     { id: "transcribing",label: "Transcribing", sub: "voice narration" },
-    { id: "drafting",    label: "Drafting",     sub: "your skill files" },
+    { id: "drafting",    label: "Drafting",     sub: isImprovementMode ? "your improvement brief" : "your skill file" },
   ];
   const currentIdx = stages.findIndex((s) => s.id === stage);
 
@@ -1253,7 +1268,7 @@ function processingView(rec: RecordingRow, stage: "uploading" | "transcribing" |
     ${!error && stage === "drafting" ? `
       <div class="glass p-3 animate-slide-up">
         <div class="flex items-center gap-2 mb-2">
-          <span class="label" style="font-size:8px;">Writing your skill</span>
+          <span class="label" style="font-size:8px;">${isImprovementMode ? "Writing your improvement brief" : "Writing your skill"}</span>
           <span class="streaming-cursor"></span>
         </div>
         <div id="stream-preview" class="streaming-preview skill-md"></div>

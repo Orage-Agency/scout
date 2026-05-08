@@ -451,7 +451,10 @@ function describeEvent(ev: CapturedEvent): string | null {
       const label = t?.visibleText || t?.selector || "element";
       return ctx ? `Clicked: ${label} — ${ctx}` : `Clicked: ${label}`;
     }
-    case "paste":  return `Pasted into form`;
+    case "paste": {
+      const snippet = String(d.content_snippet ?? "").trim().slice(0, 40);
+      return snippet ? `Pasted: "${snippet}"` : "Pasted into form";
+    }
     case "copy": {
       const snippet = String(d.content_snippet ?? "").trim().slice(0, 40);
       return snippet ? `Copied: "${snippet}"` : "Copied text";
@@ -466,7 +469,9 @@ function describeEvent(ev: CapturedEvent): string | null {
     case "checkbox_change": return `${d.checked ? "Checked" : "Unchecked"}: ${String(d.value ?? "").slice(0, 30)}`;
     case "form_fill": {
       const f = d.field as { visibleText?: string; selector?: string } | undefined;
-      return `Filled: ${f?.visibleText || f?.selector || "field"}`;
+      const val = String(d.value ?? "").trim().slice(0, 30);
+      const fieldName = f?.visibleText || f?.selector || "field";
+      return val ? `Filled ${fieldName}: "${val}"` : `Filled: ${fieldName}`;
     }
     case "coach_reply": return `Replied to coach`;
     // Noisy / low-signal — skip from live feed
