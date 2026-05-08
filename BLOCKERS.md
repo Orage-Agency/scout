@@ -4,6 +4,24 @@ Anything that stopped the autonomous build. Each entry: what, what was tried, wh
 
 ---
 
+## CRITICAL — Supabase PAT expired (2026-05-08)
+
+The PAT `sbp_665046f50d5b1954a25c95ecb10e4d2566326dc9` has expired. Edge function
+improvements accumulated since v0.1.5 (form_fill, copy content, context text,
+smarter truncation, wait-for clauses, coach copy handling) are in git but NOT yet
+deployed to `wmicxsafqbixedpjhchc`.
+
+**To fix:**
+1. Go to https://supabase.com/dashboard/account/tokens
+2. Create a new PAT named `scout-cli-deploy`
+3. In terminal: `$env:SUPABASE_ACCESS_TOKEN = "<new_pat>"`
+4. Run: `powershell -ExecutionPolicy Bypass -File scripts\deploy-edge-functions.ps1`
+
+The deploy script handles all three functions (coach, transcribe, generate-skill)
+in one shot and exits on first failure.
+
+---
+
 ## Open follow-ups (from 2026-05-07 v0.1.5 session)
 
 ### Live transcription
