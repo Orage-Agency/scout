@@ -1,7 +1,26 @@
 // /generate-skill — fetch events + transcript + sampled screenshots, ask Claude
 // to produce a SKILL.md, persist it. Per §10.
 
-import { callLLM, MODEL_SKILL } from "../_shared/llm.ts";
+import { callLLM } from "../_shared/llm.ts";
+
+// Tier → model + image strategy. Defaults to Standard. Tier comes from
+// recording.meta.tier (set by the popup when the recording starts).
+type Tier = "quick" | "standard" | "deep";
+function tierConfig(tier: Tier): {
+  model: string;
+  max_tokens: number;
+  skillImages: "none" | "conditional" | "all";
+  improvementImages: "few" | "all";
+} {
+  if (tier === "quick") {
+    return { model: "claude-haiku-4-5", max_tokens: 1500, skillImages: "none", improvementImages: "few" };
+  }
+  if (tier === "deep") {
+    return { model: "claude-opus-4-7", max_tokens: 5000, skillImages: "all", improvementImages: "all" };
+  }
+  // standard (default)
+  return { model: "claude-sonnet-4-6", max_tokens: 3500, skillImages: "conditional", improvementImages: "all" };
+}
 import { adminClient, corsHeaders, verifyAuthUser } from "../_shared/supabase.ts";
 
 const SYSTEM = `You will produce a SKILL.md file from a recorded human workflow.
@@ -210,13 +229,10 @@ Deno.serve(async (req) => {
       .eq("recording_id", recording_id)
       .order("asked_at_ms", { ascending: true });
 
-    // Decide whether each prompt actually NEEDS images. Skipping images
-    // when the events are well-described (every click has visibleText
-    // and a strong selector) saves ~$0.05 per call without hurting
-    // quality. Improvement mode always gets images — visual evidence is
-    // the whole point. Skill mode gets them only when the click events
-    // don't carry enough textual signal on their own.
-    const needsImagesForSkill = !eventsHaveStrongTextSignal(events ?? []);
+    // Pick tier config from recording.meta.tier. Tier governs model,
+    // max_tokens, and how many images to attach to each prompt.
+    const tier: Tier = ((rec.meta as { tier?: string } | null)?.tier as Tier) ?? "standard";
+    const cfg = tierConfig(tier);
     const sampledPaths = sampleScreenshots(events ?? [], coachLog ?? []);
     const allImages: Array<{ type: "image"; source: { type: "base64"; media_type: string; data: string } }> = [];
     for (const path of sampledPaths) {
@@ -229,12 +245,20 @@ Deno.serve(async (req) => {
         source: { type: "base64", media_type: blob.type || "image/jpeg", data: b64 },
       });
     }
-    // Both prompts may use a different number of images. Improvement always
-    // uses all of them; Skill uses zero when text signal is strong, else 6.
-    const imagesForImprovement = allImages;
-    const imagesForSkill = needsImagesForSkill ? allImages.slice(0, 6) : [];
+    // Image counts per tier:
+    //   Quick:    skill = 0   (text signal only), improvement = first 4
+    //   Standard: skill = 0 if click text is strong, else first 6; improvement = all
+    //   Deep:     all images for both
+    const textSignalStrong = eventsHaveStrongTextSignal(events ?? []);
+    const imagesForSkill =
+      cfg.skillImages === "all" ? allImages
+      : cfg.skillImages === "conditional"
+        ? (textSignalStrong ? [] : allImages.slice(0, 6))
+        : []; // "none"
+    const imagesForImprovement =
+      cfg.improvementImages === "all" ? allImages : allImages.slice(0, 4);
     console.log(
-      `[generate-skill] images: improvement=${imagesForImprovement.length} skill=${imagesForSkill.length} (text-signal-strong=${!needsImagesForSkill})`,
+      `[generate-skill] tier=${tier} model=${cfg.model} skill_imgs=${imagesForSkill.length} improv_imgs=${imagesForImprovement.length} text_strong=${textSignalStrong}`,
     );
 
     const transcriptText = (rec.transcript?.segments ?? [])
@@ -273,16 +297,16 @@ SCREENSHOTS: {{IMAGE_COUNT}} attached as image blocks below.`;
     // doesn't gate which artifact gets produced.
     // deno-lint-ignore no-explicit-any
     const skillCall = callLLM({
-      model: MODEL_SKILL,
-      max_tokens: 3500,
+      model: cfg.model,
+      max_tokens: cfg.max_tokens,
       system: SYSTEM,
       temperature: 0.4,
       messages: [{ role: "user", content: buildContent("Now produce the SKILL.md from these materials.", imagesForSkill) as any }],
     });
     // deno-lint-ignore no-explicit-any
     const improvementCall = callLLM({
-      model: MODEL_SKILL,
-      max_tokens: 3500,
+      model: cfg.model,
+      max_tokens: cfg.max_tokens,
       system: IMPROVEMENT_SYSTEM,
       temperature: 0.4,
       messages: [{ role: "user", content: buildContent("Now produce the CHANGE BRIEF from these materials.", imagesForImprovement) as any }],

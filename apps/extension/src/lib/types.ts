@@ -96,7 +96,7 @@ export interface SkillRow {
 
 // Service-worker ↔ popup ↔ content-script ↔ offscreen messages.
 export type RuntimeMessage =
-  | { type: "popup:start_recording"; mic_enabled?: boolean; mode?: "skill" | "improvement" }
+  | { type: "popup:start_recording"; mic_enabled?: boolean; mode?: "skill" | "improvement"; tier?: "quick" | "standard" | "deep" }
   | { type: "popup:stop_recording" }
   | { type: "popup:pause_recording" }
   | { type: "popup:resume_recording" }

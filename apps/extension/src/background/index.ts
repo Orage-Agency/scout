@@ -53,6 +53,7 @@ async function saveSession(s: RecordingSessionState | null): Promise<void> {
 async function startRecording(
   micEnabled: boolean,
   mode: "skill" | "improvement" = "skill",
+  tier: "quick" | "standard" | "deep" = "standard",
 ): Promise<RecordingSessionState | null> {
   const authClient = getAuthSupabase();
   const db = getDataSupabase();
@@ -73,7 +74,9 @@ async function startRecording(
       status: "recording",
       mode,
       started_at: new Date(startedAtMs).toISOString(),
-      meta: { ua: navigator.userAgent, platform: navigator.platform },
+      // tier lives in meta so we don't need a schema migration for an
+      // experimental knob. generate-skill reads rec.meta.tier.
+      meta: { ua: navigator.userAgent, platform: navigator.platform, tier },
     });
   if (error) {
     console.error("[scout] failed to insert recording", error);
@@ -828,7 +831,11 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse)
         case "popup:start_recording": {
           // mic_enabled is required from the popup; if missing we default
           // to opt-out (false) — never silently capture audio.
-          const state = await startRecording(msg.mic_enabled ?? false, msg.mode ?? "skill");
+          const state = await startRecording(
+            msg.mic_enabled ?? false,
+            msg.mode ?? "skill",
+            msg.tier ?? "standard",
+          );
           sendResponse({ state });
           break;
         }

@@ -32,6 +32,19 @@ const MIC_PREF_KEY = "scout:mic_enabled";
 // ("improvement").
 const MODE_PREF_KEY = "scout:recording_mode";
 
+// Compute tier — controls the model + image strategy used when generating
+// the skill / improvement brief. Quick = Haiku, no images, ~$0.04. Standard
+// = Sonnet, conditional images, ~$0.12. Deep = Opus, all images, ~$0.40.
+const TIER_PREF_KEY = "scout:tier";
+
+type Tier = "quick" | "standard" | "deep";
+
+async function getTier(): Promise<Tier> {
+  const v = await chrome.storage.local.get(TIER_PREF_KEY);
+  const t = v[TIER_PREF_KEY] as string | undefined;
+  return t === "quick" || t === "deep" ? (t as Tier) : "standard";
+}
+
 async function getMicEnabled(): Promise<boolean> {
   const v = await chrome.storage.local.get(MIC_PREF_KEY);
   return (v[MIC_PREF_KEY] as boolean | undefined) ?? true;
@@ -179,7 +192,7 @@ function header(active: "record" | "library" | "settings" | null): HTMLElement {
   h.innerHTML = `
     <div class="flex items-baseline gap-3">
       <span class="display text-[28px]" style="color:#E4AF7A;">SCOUT</span>
-      <span class="label" style="font-size:9px;">v0.1.13 · Orage AI</span>
+      <span class="label" style="font-size:9px;">v0.1.14 · Orage AI</span>
     </div>
     <div class="divider-gold"></div>
   `;
@@ -306,6 +319,14 @@ function recordTab(): HTMLElement {
         </div>
       </div>
       <div class="flex items-center gap-2">
+        <span class="text-[10px]" style="color:rgba(255,232,199,0.45);font-family:'Bebas Neue',sans-serif;letter-spacing:0.18em;text-transform:uppercase;">Tier</span>
+        <div class="ml-auto flex gap-1">
+          <button id="tier-quick" class="tab-pill text-[10px]" style="padding:4px 8px;" title="Haiku, no images — ~$0.04">Quick</button>
+          <button id="tier-standard" class="tab-pill text-[10px]" style="padding:4px 8px;" title="Sonnet 4.6 — ~$0.12">Standard</button>
+          <button id="tier-deep" class="tab-pill text-[10px]" style="padding:4px 8px;" title="Opus 4.7, all images — ~$0.40">Deep</button>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
         <span id="mic-icon" style="font-size:14px; transition:opacity 0.15s;">🎙</span>
         <span class="text-[12px] flex-1 text-left" style="color:rgba(255,232,199,0.65);">Voice narration</span>
         <button id="mic-toggle" class="tab-pill text-[10px]" style="min-width:40px; padding:4px 10px;">ON</button>
@@ -318,6 +339,9 @@ function recordTab(): HTMLElement {
   const micToggleBtn = d.querySelector<HTMLButtonElement>("#mic-toggle")!;
   const modeSkillBtn = d.querySelector<HTMLButtonElement>("#mode-skill")!;
   const modeImproveBtn = d.querySelector<HTMLButtonElement>("#mode-improvement")!;
+  const tierQuickBtn = d.querySelector<HTMLButtonElement>("#tier-quick")!;
+  const tierStdBtn = d.querySelector<HTMLButtonElement>("#tier-standard")!;
+  const tierDeepBtn = d.querySelector<HTMLButtonElement>("#tier-deep")!;
   const blurb = d.querySelector<HTMLParagraphElement>("#mode-blurb")!;
 
   // Load saved mic preference and reflect in UI.
@@ -358,6 +382,17 @@ function recordTab(): HTMLElement {
     renderMode("improvement");
   };
 
+  // Tier picker — hot-pinks the active option, persists choice.
+  const renderTier = (t: Tier) => {
+    tierQuickBtn.className = `tab-pill text-[10px]${t === "quick" ? " active" : ""}`;
+    tierStdBtn.className = `tab-pill text-[10px]${t === "standard" ? " active" : ""}`;
+    tierDeepBtn.className = `tab-pill text-[10px]${t === "deep" ? " active" : ""}`;
+  };
+  void getTier().then(renderTier);
+  tierQuickBtn.onclick = async () => { await chrome.storage.local.set({ [TIER_PREF_KEY]: "quick" }); renderTier("quick"); };
+  tierStdBtn.onclick   = async () => { await chrome.storage.local.set({ [TIER_PREF_KEY]: "standard" }); renderTier("standard"); };
+  tierDeepBtn.onclick  = async () => { await chrome.storage.local.set({ [TIER_PREF_KEY]: "deep" }); renderTier("deep"); };
+
   // Show a hint if the active tab is one Chrome blocks content scripts on —
   // recording technically still runs (audio + tab events) but no clicks/keys
   // are captured, which looks like "nothing's happening".
@@ -374,10 +409,12 @@ function recordTab(): HTMLElement {
   d.querySelector<HTMLButtonElement>("#rec")!.onclick = async () => {
     const micEnabled = await getMicEnabled();
     const mode = await getRecordingMode();
+    const tier = await getTier();
     const resp = await chrome.runtime.sendMessage({
       type: "popup:start_recording",
       mic_enabled: micEnabled,
       mode,
+      tier,
     } satisfies RuntimeMessage);
     if (resp?.state) {
       view = { kind: "recording", state: resp.state };
