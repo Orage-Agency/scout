@@ -50,7 +50,7 @@ async function saveSession(s: RecordingSessionState | null): Promise<void> {
 
 // ---- Recording lifecycle ----
 
-async function startRecording(): Promise<RecordingSessionState | null> {
+async function startRecording(micEnabled = true): Promise<RecordingSessionState | null> {
   const authClient = getAuthSupabase();
   const db = getDataSupabase();
   const { data: auth } = await authClient.auth.getUser();
@@ -85,7 +85,8 @@ async function startRecording(): Promise<RecordingSessionState | null> {
     started_at: startedAtMs,
     paused_ms: 0,
     is_paused: false,
-    audio_supported: true,
+    audio_supported: micEnabled, // false if user disabled voice narration
+    mic_enabled: micEnabled,
     ask_count: 0,
     last_ask_at: 0,
     event_count: 0,
@@ -95,8 +96,10 @@ async function startRecording(): Promise<RecordingSessionState | null> {
   };
   await saveSession(state);
 
-  await ensureOffscreen();
-  await sendToOffscreen({ type: "offscreen:start_audio" });
+  if (micEnabled) {
+    await ensureOffscreen();
+    await sendToOffscreen({ type: "offscreen:start_audio" });
+  }
 
   await broadcastToTabs({ type: "content:show_control_bar" });
 
@@ -141,8 +144,28 @@ async function stopRecording(): Promise<void> {
   const endedAt = Date.now();
   const durationMs = endedAt - state.started_at - state.paused_ms;
 
-  // 1. Mark the row as ended + uploading. Single atomic update; no further
-  //    writes happen here.
+  // 1a. Voice narration disabled — no audio to upload or transcribe. Go
+  //     straight to ready with an empty transcript so the skill generator
+  //     can run immediately from events + screenshots alone.
+  if (state.mic_enabled === false) {
+    await db
+      .from("recordings")
+      .update({
+        status: "ready",
+        ended_at: new Date(endedAt).toISOString(),
+        duration_ms: durationMs,
+        transcript: { segments: [] },
+      })
+      .eq("id", state.recording_id);
+    broadcastRecordingChanged(state.recording_id, "ready");
+    await saveSession(null);
+    await chrome.runtime.sendMessage({ type: "popup:state", state: null }).catch(() => {});
+    console.log("[scout] recording stopped (no audio)", state.recording_id);
+    return;
+  }
+
+  // 1b. Mark the row as ended + uploading. Single atomic update; no further
+  //     writes happen here.
   await db
     .from("recordings")
     .update({
@@ -760,7 +783,7 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse)
     try {
       switch (msg.type) {
         case "popup:start_recording": {
-          const state = await startRecording();
+          const state = await startRecording(msg.mic_enabled ?? true);
           sendResponse({ state });
           break;
         }

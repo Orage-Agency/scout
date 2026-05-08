@@ -23,6 +23,14 @@ let view: View = { kind: "loading" };
 // resume its processing/skill view if the user closes the popup mid-wait.
 const RECENT_KEY = "scout:recent_recording_id";
 
+// User preference: whether to capture microphone during recordings.
+const MIC_PREF_KEY = "scout:mic_enabled";
+
+async function getMicEnabled(): Promise<boolean> {
+  const v = await chrome.storage.local.get(MIC_PREF_KEY);
+  return (v[MIC_PREF_KEY] as boolean | undefined) ?? true;
+}
+
 // Cached role from the JWT app_metadata.role claim. "admin" means Orage; can
 // see all skills and download them. Anything else (including null) is "guest"
 // — the skill stays server-side, no download, no body shown.
@@ -42,6 +50,13 @@ async function init(): Promise<void> {
     view = { kind: "signed_out", mode: "signin" };
     return render();
   }
+  // The auth bridge seeds the data client asynchronously (fire-and-forget).
+  // Seed it explicitly here so loadLibrary queries always carry the JWT,
+  // preventing the race where the library appears empty on first open.
+  await db.auth.setSession({
+    access_token: sess.session.access_token,
+    refresh_token: sess.session.refresh_token,
+  });
   await refreshRole();
   const { state } = (await chrome.runtime.sendMessage({ type: "popup:get_state" } satisfies RuntimeMessage)) ?? {};
   if (state) {
@@ -238,10 +253,34 @@ function recordTab(): HTMLElement {
       </button>
     </div>
     <div class="display text-[18px] mt-3" style="color:#E4AF7A;">Start Recording</div>
-    <p class="text-[12px] leading-relaxed max-w-[280px]" style="color:rgba(255,232,199,0.55);">We'll capture clicks, keystrokes, screenshots, and your narration. Talk through the <em style="color:#E4AF7A;font-style:normal;">why</em> and the skill writes itself.</p>
+    <p class="text-[12px] leading-relaxed max-w-[280px]" style="color:rgba(255,232,199,0.55);">We'll capture clicks, keystrokes, and screenshots. Enable voice narration to talk through the <em style="color:#E4AF7A;font-style:normal;">why</em> and the skill writes itself.</p>
+    <div class="glass flex items-center gap-3 px-4 py-2.5 w-full max-w-[260px]">
+      <span id="mic-icon" style="font-size:16px; transition:opacity 0.15s;">🎙</span>
+      <span class="text-[12px] flex-1 text-left" style="color:rgba(255,232,199,0.65);">Voice narration</span>
+      <button id="mic-toggle" class="tab-pill text-[10px]" style="min-width:40px; padding:4px 10px;">ON</button>
+    </div>
     <p id="warn" class="text-[11px] leading-snug hidden glass px-3 py-2 mt-1" style="color:#B45309;"></p>
   `;
   const warnEl = d.querySelector<HTMLParagraphElement>("#warn")!;
+  const micIcon = d.querySelector<HTMLSpanElement>("#mic-icon")!;
+  const micToggleBtn = d.querySelector<HTMLButtonElement>("#mic-toggle")!;
+
+  // Load saved mic preference and reflect in UI.
+  void getMicEnabled().then((enabled) => {
+    micToggleBtn.textContent = enabled ? "ON" : "OFF";
+    micToggleBtn.className = `tab-pill text-[10px]${enabled ? " active" : ""}`;
+    micIcon.style.opacity = enabled ? "1" : "0.3";
+  });
+
+  micToggleBtn.onclick = async () => {
+    const isOn = micToggleBtn.textContent === "ON";
+    const next = !isOn;
+    await chrome.storage.local.set({ [MIC_PREF_KEY]: next });
+    micToggleBtn.textContent = next ? "ON" : "OFF";
+    micToggleBtn.className = `tab-pill text-[10px]${next ? " active" : ""}`;
+    micIcon.style.opacity = next ? "1" : "0.3";
+  };
+
   // Show a hint if the active tab is one Chrome blocks content scripts on —
   // recording technically still runs (audio + tab events) but no clicks/keys
   // are captured, which looks like "nothing's happening".
@@ -256,7 +295,11 @@ function recordTab(): HTMLElement {
     }
   });
   d.querySelector<HTMLButtonElement>("#rec")!.onclick = async () => {
-    const resp = await chrome.runtime.sendMessage({ type: "popup:start_recording" } satisfies RuntimeMessage);
+    const micEnabled = await getMicEnabled();
+    const resp = await chrome.runtime.sendMessage({
+      type: "popup:start_recording",
+      mic_enabled: micEnabled,
+    } satisfies RuntimeMessage);
     if (resp?.state) {
       view = { kind: "recording", state: resp.state };
       render();
@@ -279,9 +322,18 @@ function libraryTab(): HTMLElement {
 async function loadLibrary(container: HTMLDivElement): Promise<void> {
   container.innerHTML = `<div class="text-muted text-xs">Loading…</div>`;
   const db = getDataSupabase();
+  // Explicit user_id filter is belt-and-suspenders on top of RLS — also
+  // ensures we get the right user's recordings if the JWT was just rotated.
+  const { data: authUser } = await getAuthSupabase().auth.getUser();
+  const userId = authUser.user?.id;
+  if (!userId) {
+    container.innerHTML = `<div class="text-muted text-xs">Not signed in.</div>`;
+    return;
+  }
   const { data, error } = await db
     .from("recordings")
     .select("*, skills(id,version,title,created_at)")
+    .eq("user_id", userId)
     .order("started_at", { ascending: false })
     .limit(50);
   if (error) {
@@ -368,13 +420,21 @@ function settingsTab(): HTMLElement {
 
 // ---- Recording state ----
 
+function micBadgeHtml(s: RecordingSessionState): string {
+  if (s.mic_enabled === false) {
+    return `<span class="label" style="font-size:9px;color:rgba(255,232,199,0.35);" title="Voice narration disabled">🎙 off</span>`;
+  }
+  if (s.audio_supported) {
+    return `<span class="label" style="font-size:9px;color:#15803D;display:inline-flex;align-items:center;gap:3px;" title="Microphone active — narrate what you're doing"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#15803D;box-shadow:0 0 0 0 rgba(21,128,61,0.55);animation:pulse-dot 1.6s ease-in-out infinite;"></span>🎙 live</span>`;
+  }
+  return `<span class="label" style="font-size:9px;color:#B45309;" title="Mic denied or unavailable. Recording continues without narration.">🎙 denied</span>`;
+}
+
 function recordingView(s: RecordingSessionState): HTMLElement {
   const d = document.createElement("div");
   d.className = "flex-1 px-5 py-5 flex flex-col gap-3";
   const startedMs = s.started_at;
-  const audioBadge = s.audio_supported
-    ? `<span class="label" style="font-size:9px;color:#15803D;">audio on</span>`
-    : `<span class="label" style="font-size:9px;color:#B45309;" title="Mic denied or unavailable. Recording continues without narration.">audio off</span>`;
+  const audioBadge = micBadgeHtml(s);
   const tabTitle = s.active_tab_title?.trim() || (s.active_tab_url ? new URL(s.active_tab_url).hostname : "—");
   d.innerHTML = `
     <div class="glass p-4">
@@ -414,7 +474,9 @@ function recordingView(s: RecordingSessionState): HTMLElement {
     const db = getDataSupabase();
     const { data: rec } = await db.from("recordings").select("*").eq("id", recordingId).single();
     if (rec) {
-      view = { kind: "processing", recording: rec as RecordingRow, stage: "uploading" };
+      // When mic is disabled, stop() goes straight to 'ready' — skip uploading/transcribing stages.
+      const initialStage = (rec as RecordingRow).status === "ready" ? "drafting" : "uploading";
+      view = { kind: "processing", recording: rec as RecordingRow, stage: initialStage };
       render();
       void runAutoGenerate(rec as RecordingRow);
     } else {

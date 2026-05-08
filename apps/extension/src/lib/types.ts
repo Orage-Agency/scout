@@ -43,6 +43,7 @@ export interface RecordingSessionState {
   paused_ms: number;  // total time paused
   is_paused: boolean;
   audio_supported: boolean;
+  mic_enabled: boolean;  // user opted in to voice narration
   ask_count: number;
   last_ask_at: number; // epoch ms; 0 if no ask yet
   event_count: number; // live counter for popup display
@@ -92,7 +93,7 @@ export interface SkillRow {
 
 // Service-worker ↔ popup ↔ content-script ↔ offscreen messages.
 export type RuntimeMessage =
-  | { type: "popup:start_recording" }
+  | { type: "popup:start_recording"; mic_enabled?: boolean }
   | { type: "popup:stop_recording" }
   | { type: "popup:pause_recording" }
   | { type: "popup:resume_recording" }
