@@ -55,6 +55,102 @@ export async function callLLM(req: LLMRequest): Promise<string> {
   throw new Error("No LLM key configured (ANTHROPIC_API_KEY or OPENROUTER_API_KEY)");
 }
 
+// Streaming version — yields text deltas as they arrive.
+export async function* callLLMStream(req: LLMRequest): AsyncGenerator<string> {
+  const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
+  if (anthropicKey) { yield* streamAnthropic(req, anthropicKey); return; }
+  const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
+  if (openRouterKey) { yield* streamOpenRouter(req, openRouterKey); return; }
+  throw new Error("No LLM key configured (ANTHROPIC_API_KEY or OPENROUTER_API_KEY)");
+}
+
+async function* streamAnthropic(req: LLMRequest, key: string): AsyncGenerator<string> {
+  const systemBlocks = req.system
+    ? [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }]
+    : undefined;
+  const body = {
+    model: anthropicModelId(req.model ?? DEFAULT_MODEL),
+    max_tokens: req.max_tokens,
+    temperature: req.temperature,
+    system: systemBlocks,
+    messages: req.messages.map(toAnthropicMessage),
+    stream: true,
+  };
+  const res = await fetch(ANTHROPIC_API, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": ANTHROPIC_VERSION,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const raw = line.slice(6);
+      if (raw === "[DONE]") return;
+      try {
+        const evt = JSON.parse(raw);
+        // content_block_delta carries text_delta
+        if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+          yield evt.delta.text as string;
+        }
+      } catch { /* skip */ }
+    }
+  }
+}
+
+async function* streamOpenRouter(req: LLMRequest, key: string): AsyncGenerator<string> {
+  const body = JSON.stringify({
+    model: openRouterModelId(req.model ?? DEFAULT_MODEL),
+    messages: toOpenAIMessages(req),
+    max_tokens: req.max_tokens,
+    temperature: req.temperature,
+    stream: true,
+  });
+  const res = await fetch(OPENROUTER_API, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "authorization": `Bearer ${key}`,
+      "HTTP-Referer": "https://github.com/Orage-Agency/scout",
+      "X-Title": "Scout",
+    },
+    body,
+  });
+  if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${await res.text()}`);
+  const reader = res.body!.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const raw = line.slice(6);
+      if (raw === "[DONE]") return;
+      try {
+        const evt = JSON.parse(raw);
+        const delta = evt.choices?.[0]?.delta?.content ?? "";
+        if (delta) yield delta as string;
+      } catch { /* skip */ }
+    }
+  }
+}
+
 // ---- Anthropic direct ----
 
 async function callAnthropic(req: LLMRequest, key: string): Promise<string> {

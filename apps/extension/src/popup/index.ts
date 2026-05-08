@@ -1,5 +1,6 @@
 // Popup UI — vanilla TS rendering. Three tabs: Record, Library, Settings.
-// On open we hydrate from chrome.storage.session so the right state shows.
+// v0.2.0 — Orage Liquid Glass enterprise rebuild.
+// Architecture: compact top header + scrollable main + sticky bottom nav (idle only).
 
 import { getAuthSupabase, getDataSupabase, functionUrl } from "../lib/supabase";
 import type { RecordingRow, SkillRow, RecordingSessionState, RuntimeMessage } from "../lib/types";
@@ -11,30 +12,18 @@ type View =
   | { kind: "signed_out"; mode: "signin" | "signup" }
   | { kind: "idle"; tab: "record" | "library" | "settings" }
   | { kind: "recording"; state: RecordingSessionState }
-  // Single transitional state covering everything between Stop and Skill-Ready.
-  // The popup shows a single staged progress UI; the user does nothing.
   | { kind: "extra_context"; recording: RecordingRow }
   | { kind: "processing"; recording: RecordingRow; stage: "uploading" | "transcribing" | "drafting"; error?: string }
   | { kind: "skill"; recording: RecordingRow; skill: SkillRow | null; allSkills?: SkillRow[]; autoDownloaded?: boolean };
 
 const root = document.getElementById("app")!;
 let view: View = { kind: "loading" };
+// Accumulates streaming skill chunks — updated in-place without full re-renders.
+let liveStream = "";
 
-// chrome.storage.local key for the most recent recording's id. Lets the popup
-// resume its processing/skill view if the user closes the popup mid-wait.
-const RECENT_KEY = "scout:recent_recording_id";
-
-// User preference: whether to capture microphone during recordings.
-const MIC_PREF_KEY = "scout:mic_enabled";
-
-// User preference: which kind of recording — capture a workflow as a SKILL.md
-// ("skill") or capture a critique of an existing app to feed into Claude Code
-// ("improvement").
+const RECENT_KEY    = "scout:recent_recording_id";
+const MIC_PREF_KEY  = "scout:mic_enabled";
 const MODE_PREF_KEY = "scout:recording_mode";
-
-// Compute tier — controls the model + image strategy used when generating
-// the skill / improvement brief. Quick = Haiku, no images, ~$0.04. Standard
-// = Sonnet, conditional images, ~$0.12. Deep = Opus, all images, ~$0.40.
 const TIER_PREF_KEY = "scout:tier";
 
 type Tier = "quick" | "standard" | "deep";
@@ -56,18 +45,8 @@ async function getRecordingMode(): Promise<"skill" | "improvement"> {
   return m === "improvement" ? "improvement" : "skill";
 }
 
-// Cached role from the JWT app_metadata.role claim. "admin" means Orage; can
-// see all skills and download them. Anything else (including null) is "guest"
-// — the skill stays server-side, no download, no body shown.
-//
-// TEMP (v0.1.11): isAdmin() is hard-set to true so every tester gets the
-// admin UI. The JWT-based read in refreshRole() is preserved so reverting
-// is just `return currentRole === "admin"` again. Pair-revert with
-// migration 0006_temp_everyone_admin.sql.
-// TEMP (v0.1.11): every signed-in user gets the admin UI. Pair-revert
-// with migration 0006_temp_everyone_admin.sql.
-//
-// To restore the JWT-based check, replace this block with:
+// TEMP (v0.1.11): hard-set to true for testing. Pair-revert with 0006_temp_everyone_admin.sql.
+// To restore JWT-based check:
 //   let currentRole: "admin" | "guest" = "guest";
 //   function isAdmin(): boolean { return currentRole === "admin"; }
 //   async function refreshRole(): Promise<void> {
@@ -78,15 +57,14 @@ async function getRecordingMode(): Promise<"skill" | "improvement"> {
 function isAdmin(): boolean { return true; }
 async function refreshRole(): Promise<void> { /* no-op while temp-admin */ }
 
+// ---- Boot ----
+
 async function init(): Promise<void> {
   let auth: ReturnType<typeof getAuthSupabase>, db: ReturnType<typeof getDataSupabase>;
   try {
     auth = getAuthSupabase();
     db = getDataSupabase();
   } catch (e) {
-    // Supabase env vars not baked in at build time — show the sign-in form so
-    // the popup is at least renderable (smoke tests, dev without .env, etc.).
-    // Submitting will surface the config error via the form's error element.
     console.warn("[scout] supabase env not configured, falling back to signed-out view", e);
     view = { kind: "signed_out", mode: "signin" };
     render();
@@ -97,9 +75,6 @@ async function init(): Promise<void> {
     view = { kind: "signed_out", mode: "signin" };
     return render();
   }
-  // The auth bridge seeds the data client asynchronously (fire-and-forget).
-  // Seed it explicitly here so loadLibrary queries always carry the JWT,
-  // preventing the race where the library appears empty on first open.
   await db.auth.setSession({
     access_token: sess.session.access_token,
     refresh_token: sess.session.refresh_token,
@@ -110,9 +85,6 @@ async function init(): Promise<void> {
     view = { kind: "recording", state };
     return render();
   }
-  // No active recording — but maybe one just finished and the user reopened
-  // the popup to see the result. Pick up the most recent one if its status
-  // suggests it still needs the user's attention.
   const stored = await chrome.storage.local.get(RECENT_KEY);
   const recentId = stored[RECENT_KEY] as string | undefined;
   if (recentId) {
@@ -132,7 +104,6 @@ async function init(): Promise<void> {
         return;
       }
       if (rec.status === "ready") {
-        // Transcribe done but no skill yet — kick off generation.
         view = { kind: "processing", recording: rec as RecordingRow, stage: "drafting" };
         render();
         void runAutoGenerate(rec as RecordingRow);
@@ -144,84 +115,144 @@ async function init(): Promise<void> {
   render();
 }
 
+// ---- Root render ----
+
 function render(): void {
   root.innerHTML = "";
+
+  if (view.kind === "loading") {
+    root.appendChild(loadingView());
+    return;
+  }
+  if (view.kind === "signed_out") {
+    root.appendChild(signedOutView(view.mode));
+    return;
+  }
+
   const wrap = document.createElement("div");
-  wrap.className = "min-h-[480px] flex flex-col";
+  wrap.className = "flex flex-col min-h-[560px] animate-fade-in";
+
+  // Compact top header — logo only
+  wrap.appendChild(compactHeader());
+
+  // Divider below header
+  const divLine = document.createElement("div");
+  divLine.className = "divider-gold mx-5";
+  wrap.appendChild(divLine);
+
+  // Main scrollable content
+  const main = document.createElement("main");
+  main.className = "flex-1 overflow-y-auto";
+
   switch (view.kind) {
-    case "loading":
-      wrap.appendChild(loadingView());
-      break;
-    case "signed_out":
-      wrap.appendChild(signedOutView(view.mode));
-      break;
     case "idle":
-      wrap.appendChild(header(view.tab));
-      wrap.appendChild(idleView(view.tab));
+      main.appendChild(idleView(view.tab));
       break;
     case "recording":
-      wrap.appendChild(header(null));
-      wrap.appendChild(recordingView(view.state));
+      main.appendChild(recordingView(view.state));
       break;
     case "extra_context":
-      wrap.appendChild(header(null));
-      wrap.appendChild(extraContextView(view.recording));
+      main.appendChild(extraContextView(view.recording));
       break;
     case "processing":
-      wrap.appendChild(header(null));
-      wrap.appendChild(processingView(view.recording, view.stage, view.error));
+      main.appendChild(processingView(view.recording, view.stage, view.error));
       break;
     case "skill":
-      wrap.appendChild(header(null));
-      wrap.appendChild(skillView(view.recording, view.skill, view.allSkills, view.autoDownloaded));
-      // Defensive: if the chosen skill row was loaded from a partial SELECT
-      // (no body_md), refetch the full row in the background and re-render.
+      main.appendChild(skillView(view.recording, view.skill, view.allSkills, view.autoDownloaded));
       if (view.skill && !view.skill.body_md && view.skill.id) {
         void hydrateSkill(view.skill.id);
       }
       break;
   }
+
+  wrap.appendChild(main);
+
+  // Bottom nav — idle views only
+  if (view.kind === "idle") {
+    wrap.appendChild(bottomNav(view.tab));
+  }
+
   root.appendChild(wrap);
 }
 
-// ---- Header / tabs ----
+// ---- Compact header (used in all non-loading, non-auth views) ----
 
-function header(active: "record" | "library" | "settings" | null): HTMLElement {
+function compactHeader(): HTMLElement {
   const h = document.createElement("header");
-  h.className = "px-5 pt-5 pb-3 flex flex-col gap-3 relative";
+  h.className = "px-5 pt-4 pb-3 flex items-center justify-between";
   h.innerHTML = `
-    <div class="flex items-baseline gap-3">
-      <span class="display text-[28px]" style="color:#E4AF7A;">SCOUT</span>
-      <span class="label" style="font-size:9px;">v0.1.14 · Orage AI</span>
+    <div class="flex items-baseline gap-2">
+      <span class="display text-[26px]">SCOUT</span>
+      <span class="label" style="font-size:8px;opacity:0.55;">v0.2.0</span>
     </div>
-    <div class="divider-gold"></div>
+    <span class="label" style="font-size:8px;opacity:0.38;">Orage AI</span>
   `;
-  if (active) {
-    const nav = document.createElement("nav");
-    nav.className = "flex gap-1.5 mt-1";
-    for (const t of ["record", "library", "settings"] as const) {
-      const b = document.createElement("button");
-      b.className = `tab-pill${active === t ? " active" : ""}`;
-      b.textContent = t;
-      b.onclick = () => {
-        view = { kind: "idle", tab: t };
-        render();
-      };
-      nav.appendChild(b);
-    }
-    h.appendChild(nav);
-  }
   return h;
+}
+
+// ---- Bottom navigation (idle views) ----
+
+function bottomNav(active: "record" | "library" | "settings"): HTMLElement {
+  const nav = document.createElement("nav");
+  nav.className = "flex";
+  nav.style.borderTop = "1px solid rgba(182,128,57,0.12)";
+  nav.style.background = "linear-gradient(0deg,rgba(0,0,0,0.85) 0%,rgba(12,12,12,0.70) 100%)";
+  nav.style.backdropFilter = "blur(20px)";
+  (nav.style as unknown as Record<string, string>)["-webkit-backdrop-filter"] = "blur(20px)";
+
+  const tabs: Array<{ id: "record" | "library" | "settings"; label: string; icon: string }> = [
+    {
+      id: "record",
+      label: "Record",
+      icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+        <circle cx="12" cy="12" r="7"/>
+        <circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/>
+      </svg>`,
+    },
+    {
+      id: "library",
+      label: "Library",
+      icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+        <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+        <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+        <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+        <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+      </svg>`,
+    },
+    {
+      id: "settings",
+      label: "Account",
+      icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+        <circle cx="12" cy="8" r="4"/>
+        <path d="M4 20c0-4 3.58-7 8-7s8 3 8 7" stroke-linecap="round"/>
+      </svg>`,
+    },
+  ];
+
+  for (const t of tabs) {
+    const btn = document.createElement("button");
+    btn.className = `nav-tab${active === t.id ? " active" : ""}`;
+    btn.innerHTML = `${t.icon}<span>${t.label}</span>`;
+    btn.onclick = () => {
+      view = { kind: "idle", tab: t.id };
+      render();
+    };
+    nav.appendChild(btn);
+  }
+
+  return nav;
 }
 
 // ---- Loading ----
 
 function loadingView(): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 flex flex-col items-center justify-center min-h-[480px] gap-3";
+  d.style.cssText = "display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:560px;background:#000;";
+  d.style.backgroundImage = "radial-gradient(ellipse 500px 420px at 105% -10%,rgba(182,128,57,0.13) 0%,transparent 62%),radial-gradient(ellipse 480px 480px at -10% 115%,rgba(228,175,122,0.07) 0%,transparent 62%)";
   d.innerHTML = `
-    <div class="display text-[36px]" style="color:#E4AF7A;">SCOUT</div>
-    <div class="text-[11px]" style="color:rgba(255,232,199,0.5);font-family:'Bebas Neue',sans-serif;letter-spacing:0.18em;text-transform:uppercase;">Loading</div>
+    <div style="font-family:'Bebas Neue',Impact,sans-serif;font-size:52px;letter-spacing:0.05em;color:#E4AF7A;line-height:1;text-transform:uppercase;">SCOUT</div>
+    <div style="font-family:'Bebas Neue',sans-serif;font-size:10px;letter-spacing:0.30em;color:rgba(182,128,57,0.55);text-transform:uppercase;margin-top:10px;">By Orage AI</div>
+    <div style="margin-top:28px;width:36px;height:2px;background:linear-gradient(90deg,transparent,#B68039,transparent);animation:shimmer 1.4s ease infinite;" ></div>
   `;
   return d;
 }
@@ -230,43 +261,40 @@ function loadingView(): HTMLElement {
 
 function signedOutView(_mode: "signin" | "signup"): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 flex flex-col items-center justify-center px-7 gap-2.5 text-center min-h-[480px]";
-  // Single unified form: tries sign-in first, falls back to sign-up if the
-  // user doesn't exist. The user shouldn't have to know whether they have
-  // an account — they have an email + password, that's enough.
+  d.style.cssText = "display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:560px;padding:0 28px;background:#000;";
+  d.style.backgroundImage = "radial-gradient(ellipse 500px 420px at 105% -10%,rgba(182,128,57,0.13) 0%,transparent 62%),radial-gradient(ellipse 480px 480px at -10% 115%,rgba(228,175,122,0.07) 0%,transparent 62%)";
   d.innerHTML = `
-    <div class="display text-[44px] mb-1" style="color:#E4AF7A;">SCOUT</div>
-    <div class="label mb-3" style="color:#B68039;">By Orage AI</div>
-    <p class="text-[13px] leading-relaxed mb-4" style="color:rgba(255,232,199,0.65); max-width:280px;">Capture human workflows. Generate skill files for AI agents.</p>
-    <div class="glass w-full p-4 flex flex-col gap-2.5">
-      <input id="email" type="email" autocomplete="email" placeholder="you@company.com" class="input" />
-      <input id="pw" type="password" autocomplete="current-password" placeholder="Password (min 8 chars)" class="input" />
-      <button id="go" class="btn btn-primary w-full mt-1">Continue</button>
+    <div style="font-family:'Bebas Neue',Impact,sans-serif;font-size:50px;letter-spacing:0.05em;color:#E4AF7A;line-height:1;text-transform:uppercase;margin-bottom:4px;">SCOUT</div>
+    <div style="font-family:'Bebas Neue',sans-serif;font-size:10px;letter-spacing:0.28em;color:#B68039;text-transform:uppercase;margin-bottom:28px;">By Orage AI</div>
+    <p style="font-size:13px;line-height:1.65;color:rgba(255,232,199,0.55);text-align:center;max-width:270px;margin-bottom:22px;">Capture human workflows. Generate skill files for AI agents.</p>
+    <div id="form-wrap" style="width:100%;max-width:300px;display:flex;flex-direction:column;gap:10px;">
+      <div class="glass" style="padding:20px;display:flex;flex-direction:column;gap:10px;">
+        <input id="email" type="email" autocomplete="email" placeholder="you@company.com" class="input" />
+        <input id="pw" type="password" autocomplete="current-password" placeholder="Password (min 8 chars)" class="input" />
+        <button id="go" class="btn btn-primary w-full" style="margin-top:4px;">Continue</button>
+      </div>
+      <p style="font-size:10px;color:rgba(255,232,199,0.35);text-align:center;">New here? We create your account automatically.</p>
+      <p id="err" style="font-size:12px;color:#F87171;text-align:center;min-height:16px;"></p>
     </div>
-    <p class="text-[10px] mt-2" style="color:rgba(255,232,199,0.4);">New here? We'll create your account automatically.</p>
-    <p id="err" class="text-xs mt-1" style="color:#DC2626;"></p>
   `;
   const emailEl = d.querySelector<HTMLInputElement>("#email")!;
-  const pwEl = d.querySelector<HTMLInputElement>("#pw")!;
-  const errEl = d.querySelector<HTMLParagraphElement>("#err")!;
-  const goBtn = d.querySelector<HTMLButtonElement>("#go")!;
+  const pwEl    = d.querySelector<HTMLInputElement>("#pw")!;
+  const errEl   = d.querySelector<HTMLParagraphElement>("#err")!;
+  const goBtn   = d.querySelector<HTMLButtonElement>("#go")!;
+
   const submit = async () => {
-    const email = emailEl.value.trim();
+    const email    = emailEl.value.trim();
     const password = pwEl.value;
-    if (!email) { errEl.textContent = "Enter your email."; return; }
-    if (password.length < 8) { errEl.textContent = "Password must be at least 8 characters."; return; }
+    if (!email)             { errEl.textContent = "Enter your email."; return; }
+    if (password.length < 8){ errEl.textContent = "Password must be at least 8 characters."; return; }
     errEl.textContent = "";
     goBtn.disabled = true;
     goBtn.textContent = "Signing in…";
     try {
       const auth = getAuthSupabase();
-      // Try sign-in first.
       let { error } = await auth.auth.signInWithPassword({ email, password });
       if (error) {
         const msg = String(error.message || "").toLowerCase();
-        // "Invalid login credentials" is what Supabase returns for both
-        // wrong password AND non-existent user. Try sign-up; if THAT
-        // fails with "already registered", we know the password was wrong.
         if (msg.includes("invalid") || msg.includes("not found")) {
           goBtn.textContent = "Creating account…";
           const su = await auth.auth.signUp({ email, password });
@@ -275,14 +303,13 @@ function signedOutView(_mode: "signin" | "signup"): HTMLElement {
           throw error;
         }
       }
-      // onAuthStateChange flips the view to idle.
     } catch (e) {
       errEl.textContent = String((e as Error).message ?? e);
       goBtn.disabled = false;
       goBtn.textContent = "Continue";
     }
   };
-  goBtn.onclick = () => void submit();
+  goBtn.onclick  = () => void submit();
   pwEl.onkeydown = (e) => { if (e.key === "Enter") void submit(); };
   emailEl.onkeydown = (e) => { if (e.key === "Enter") pwEl.focus(); };
   return d;
@@ -291,125 +318,143 @@ function signedOutView(_mode: "signin" | "signup"): HTMLElement {
 // ---- Idle (tabbed) ----
 
 function idleView(tab: "record" | "library" | "settings"): HTMLElement {
-  if (tab === "record") return recordTab();
-  if (tab === "library") return libraryTab();
+  if (tab === "record")   return recordTab();
+  if (tab === "library")  return libraryTab();
   return settingsTab();
 }
 
+// ---- Record tab ----
+
 function recordTab(): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 flex flex-col items-center justify-center gap-4 px-8 py-10 text-center";
+  d.className = "flex flex-col items-center px-6 py-8 gap-5";
+
+  // Record button with animated ring
   d.innerHTML = `
-    <div class="relative">
-      <div class="absolute inset-0 rounded-full" style="background:radial-gradient(circle, rgba(182,128,57,0.35) 0%, transparent 70%); transform:scale(1.5); pointer-events:none;"></div>
+    <div class="relative flex items-center justify-center" style="width:140px;height:140px;">
+      <!-- Animated expanding rings -->
+      <div class="absolute rounded-full pointer-events-none record-ring-pulse"
+        style="inset:0;border:1.5px solid rgba(182,128,57,0.28);border-radius:50%;"></div>
+      <div class="absolute rounded-full pointer-events-none record-ring-pulse-delay"
+        style="inset:0;border:1px solid rgba(182,128,57,0.16);border-radius:50%;"></div>
+      <!-- Outer static ring -->
+      <div class="absolute rounded-full pointer-events-none"
+        style="inset:-10px;background:transparent;border:1px solid rgba(182,128,57,0.12);border-radius:50%;"></div>
+      <!-- main button -->
       <button id="rec"
-        class="relative w-[104px] h-[104px] rounded-full transition-all duration-200 flex items-center justify-center"
-        style="background:linear-gradient(180deg,#C68A41 0%,#8B5E2A 100%); border:1px solid rgba(228,175,122,0.7); box-shadow:0 1px 0 rgba(255,255,255,0.18) inset, 0 -2px 0 rgba(0,0,0,0.3) inset, 0 8px 30px rgba(182,128,57,0.40);">
-        <span class="block w-7 h-7 rounded-full" style="background:#1a0e02;"></span>
+        class="w-[108px] h-[108px] rounded-full flex items-center justify-center transition-transform duration-150 active:scale-95"
+        style="background:linear-gradient(160deg,#D4924A 0%,#9A6228 55%,#7A4A18 100%);border:1px solid rgba(228,175,122,0.65);box-shadow:0 1px 0 rgba(255,255,255,0.20) inset,0 -2px 0 rgba(0,0,0,0.32) inset,0 10px 40px rgba(182,128,57,0.44);animation:record-btn-idle 3s ease-in-out infinite;">
+        <span class="block w-9 h-9 rounded-full" style="background:linear-gradient(180deg,#2a1506 0%,#1a0e02 100%);box-shadow:0 2px 8px rgba(0,0,0,0.60) inset,0 1px 0 rgba(255,255,255,0.06) inset;"></span>
       </button>
     </div>
-    <div class="display text-[18px] mt-3" style="color:#E4AF7A;">Start Recording</div>
-    <p id="mode-blurb" class="text-[12px] leading-relaxed max-w-[280px]" style="color:rgba(255,232,199,0.55);">We'll capture clicks, keystrokes, and screenshots. Enable voice narration to talk through the <em style="color:#E4AF7A;font-style:normal;">why</em> and the skill writes itself.</p>
-    <div class="glass flex flex-col gap-2 px-4 py-3 w-full max-w-[280px]">
-      <div class="flex items-center gap-2">
-        <span class="text-[10px]" style="color:rgba(255,232,199,0.45);font-family:'Bebas Neue',sans-serif;letter-spacing:0.18em;text-transform:uppercase;">Mode</span>
-        <div class="ml-auto flex gap-1">
-          <button id="mode-skill" class="tab-pill text-[10px]" style="padding:4px 10px;">Skill</button>
-          <button id="mode-improvement" class="tab-pill text-[10px]" style="padding:4px 10px;">Improvements</button>
-        </div>
-      </div>
-      <div class="flex items-center gap-2">
-        <span class="text-[10px]" style="color:rgba(255,232,199,0.45);font-family:'Bebas Neue',sans-serif;letter-spacing:0.18em;text-transform:uppercase;">Tier</span>
-        <div class="ml-auto flex gap-1">
-          <button id="tier-quick" class="tab-pill text-[10px]" style="padding:4px 8px;" title="Haiku, no images — ~$0.04">Quick</button>
-          <button id="tier-standard" class="tab-pill text-[10px]" style="padding:4px 8px;" title="Sonnet 4.6 — ~$0.12">Standard</button>
-          <button id="tier-deep" class="tab-pill text-[10px]" style="padding:4px 8px;" title="Opus 4.7, all images — ~$0.40">Deep</button>
-        </div>
-      </div>
-      <div class="flex items-center gap-2">
-        <span id="mic-icon" style="font-size:14px; transition:opacity 0.15s;">🎙</span>
-        <span class="text-[12px] flex-1 text-left" style="color:rgba(255,232,199,0.65);">Voice narration</span>
-        <button id="mic-toggle" class="tab-pill text-[10px]" style="min-width:40px; padding:4px 10px;">ON</button>
-      </div>
-    </div>
-    <p id="warn" class="text-[11px] leading-snug hidden glass px-3 py-2 mt-1" style="color:#B45309;"></p>
-  `;
-  const warnEl = d.querySelector<HTMLParagraphElement>("#warn")!;
-  const micIcon = d.querySelector<HTMLSpanElement>("#mic-icon")!;
-  const micToggleBtn = d.querySelector<HTMLButtonElement>("#mic-toggle")!;
-  const modeSkillBtn = d.querySelector<HTMLButtonElement>("#mode-skill")!;
-  const modeImproveBtn = d.querySelector<HTMLButtonElement>("#mode-improvement")!;
-  const tierQuickBtn = d.querySelector<HTMLButtonElement>("#tier-quick")!;
-  const tierStdBtn = d.querySelector<HTMLButtonElement>("#tier-standard")!;
-  const tierDeepBtn = d.querySelector<HTMLButtonElement>("#tier-deep")!;
-  const blurb = d.querySelector<HTMLParagraphElement>("#mode-blurb")!;
 
-  // Load saved mic preference and reflect in UI.
+    <div style="text-align:center;">
+      <div class="display text-[20px]" style="color:#E4AF7A;">Start Recording</div>
+      <p id="mode-blurb" class="text-[12px] leading-relaxed mt-1.5" style="color:rgba(255,232,199,0.50);max-width:240px;margin-inline:auto;"></p>
+    </div>
+
+    <p id="warn" class="text-[11px] leading-snug hidden glass px-3 py-2 w-full text-center" style="color:#F59E0B;"></p>
+
+    <!-- Settings glass card -->
+    <div class="glass w-full" style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;">
+
+      <!-- Mode row -->
+      <div class="flex items-center gap-2">
+        <span class="label" style="font-size:9px;flex:1;">Mode</span>
+        <div class="flex gap-1">
+          <button id="mode-skill"        class="tab-pill" style="font-size:10px;padding:4px 10px;">Skill</button>
+          <button id="mode-improvement"  class="tab-pill" style="font-size:10px;padding:4px 10px;">Improvements</button>
+        </div>
+      </div>
+
+      <div class="divider-subtle"></div>
+
+      <!-- Tier row -->
+      <div class="flex items-center gap-2">
+        <span class="label" style="font-size:9px;flex:1;">Tier</span>
+        <div class="flex gap-1">
+          <button id="tier-quick"    class="tab-pill" style="font-size:10px;padding:4px 8px;" title="Haiku · no images · ~$0.04">Quick</button>
+          <button id="tier-standard" class="tab-pill" style="font-size:10px;padding:4px 8px;" title="Sonnet 4.6 · ~$0.12">Standard</button>
+          <button id="tier-deep"     class="tab-pill" style="font-size:10px;padding:4px 8px;" title="Opus 4.7 · all images · ~$0.40">Deep</button>
+        </div>
+      </div>
+
+      <div class="divider-subtle"></div>
+
+      <!-- Mic row -->
+      <div class="flex items-center gap-2">
+        <span id="mic-icon" style="font-size:13px;transition:opacity 0.15s;flex-shrink:0;">🎙</span>
+        <span class="text-[12px] flex-1" style="color:rgba(255,232,199,0.60);">Voice narration</span>
+        <button id="mic-toggle" class="tab-pill" style="font-size:10px;min-width:36px;padding:4px 10px;">ON</button>
+      </div>
+
+    </div>
+  `;
+
+  const warnEl        = d.querySelector<HTMLParagraphElement>("#warn")!;
+  const micIcon       = d.querySelector<HTMLSpanElement>("#mic-icon")!;
+  const micToggleBtn  = d.querySelector<HTMLButtonElement>("#mic-toggle")!;
+  const modeSkillBtn  = d.querySelector<HTMLButtonElement>("#mode-skill")!;
+  const modeImproveBtn= d.querySelector<HTMLButtonElement>("#mode-improvement")!;
+  const tierQuickBtn  = d.querySelector<HTMLButtonElement>("#tier-quick")!;
+  const tierStdBtn    = d.querySelector<HTMLButtonElement>("#tier-standard")!;
+  const tierDeepBtn   = d.querySelector<HTMLButtonElement>("#tier-deep")!;
+  const blurb         = d.querySelector<HTMLParagraphElement>("#mode-blurb")!;
+
+  // Mic
   void getMicEnabled().then((enabled) => {
     micToggleBtn.textContent = enabled ? "ON" : "OFF";
-    micToggleBtn.className = `tab-pill text-[10px]${enabled ? " active" : ""}`;
-    micIcon.style.opacity = enabled ? "1" : "0.3";
+    micToggleBtn.className   = `tab-pill${enabled ? " active" : ""} text-[10px]`;
+    micIcon.style.opacity    = enabled ? "1" : "0.3";
   });
-
   micToggleBtn.onclick = async () => {
-    const isOn = micToggleBtn.textContent === "ON";
-    const next = !isOn;
+    const next = micToggleBtn.textContent === "OFF";
     await chrome.storage.local.set({ [MIC_PREF_KEY]: next });
     micToggleBtn.textContent = next ? "ON" : "OFF";
-    micToggleBtn.className = `tab-pill text-[10px]${next ? " active" : ""}`;
-    micIcon.style.opacity = next ? "1" : "0.3";
+    micToggleBtn.className   = `tab-pill${next ? " active" : ""} text-[10px]`;
+    micIcon.style.opacity    = next ? "1" : "0.3";
   };
 
-  // Load + paint mode preference. Improvements mode rewrites the body blurb
-  // so the user knows what to do during the recording.
+  // Mode
   const renderMode = (mode: "skill" | "improvement") => {
     const isImprove = mode === "improvement";
-    modeSkillBtn.className = `tab-pill text-[10px]${!isImprove ? " active" : ""}`;
-    modeImproveBtn.className = `tab-pill text-[10px]${isImprove ? " active" : ""}`;
-    // Both artifacts are generated for every recording. The toggle just
-    // hints which one to open by default in the result view.
+    modeSkillBtn.className   = `tab-pill${!isImprove ? " active" : ""} text-[10px]`;
+    modeImproveBtn.className = `tab-pill${isImprove ? " active" : ""} text-[10px]`;
     blurb.innerHTML = isImprove
-      ? `Walk through the app and call out what's <em style="color:#E4AF7A;font-style:normal;">wrong</em>: a broken layout, a confusing label, a feature that should exist. We always generate <strong>both</strong> a Skill and an Improvements brief — toggling Improvements just opens that one first.`
-      : `We'll capture clicks, keystrokes, and screenshots. Enable voice narration to talk through the <em style="color:#E4AF7A;font-style:normal;">why</em> and the skill writes itself. We always generate <strong>both</strong> a Skill and an Improvements brief — toggling Skill just opens that one first.`;
+      ? `Walk through the app. Call out what's broken. We generate <strong style="color:#E4AF7A;">both</strong> a Skill and an Improvements brief — this just opens Improvements first.`
+      : `Capture your workflow with narration. We generate <strong style="color:#E4AF7A;">both</strong> a Skill and an Improvements brief — this just opens Skill first.`;
   };
   void getRecordingMode().then(renderMode);
-  modeSkillBtn.onclick = async () => {
-    await chrome.storage.local.set({ [MODE_PREF_KEY]: "skill" });
-    renderMode("skill");
-  };
-  modeImproveBtn.onclick = async () => {
-    await chrome.storage.local.set({ [MODE_PREF_KEY]: "improvement" });
-    renderMode("improvement");
-  };
+  modeSkillBtn.onclick   = async () => { await chrome.storage.local.set({ [MODE_PREF_KEY]: "skill" }); renderMode("skill"); };
+  modeImproveBtn.onclick = async () => { await chrome.storage.local.set({ [MODE_PREF_KEY]: "improvement" }); renderMode("improvement"); };
 
-  // Tier picker — hot-pinks the active option, persists choice.
+  // Tier
   const renderTier = (t: Tier) => {
-    tierQuickBtn.className = `tab-pill text-[10px]${t === "quick" ? " active" : ""}`;
-    tierStdBtn.className = `tab-pill text-[10px]${t === "standard" ? " active" : ""}`;
-    tierDeepBtn.className = `tab-pill text-[10px]${t === "deep" ? " active" : ""}`;
+    tierQuickBtn.className = `tab-pill${t === "quick"    ? " active" : ""} text-[10px]`;
+    tierStdBtn.className   = `tab-pill${t === "standard" ? " active" : ""} text-[10px]`;
+    tierDeepBtn.className  = `tab-pill${t === "deep"     ? " active" : ""} text-[10px]`;
   };
   void getTier().then(renderTier);
-  tierQuickBtn.onclick = async () => { await chrome.storage.local.set({ [TIER_PREF_KEY]: "quick" }); renderTier("quick"); };
+  tierQuickBtn.onclick = async () => { await chrome.storage.local.set({ [TIER_PREF_KEY]: "quick" });    renderTier("quick"); };
   tierStdBtn.onclick   = async () => { await chrome.storage.local.set({ [TIER_PREF_KEY]: "standard" }); renderTier("standard"); };
-  tierDeepBtn.onclick  = async () => { await chrome.storage.local.set({ [TIER_PREF_KEY]: "deep" }); renderTier("deep"); };
+  tierDeepBtn.onclick  = async () => { await chrome.storage.local.set({ [TIER_PREF_KEY]: "deep" });     renderTier("deep"); };
 
-  // Show a hint if the active tab is one Chrome blocks content scripts on —
-  // recording technically still runs (audio + tab events) but no clicks/keys
-  // are captured, which looks like "nothing's happening".
+  // Blocked page warning
   void chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
     if (!tab?.url) return;
     const blocked = /^(chrome|chrome-extension|edge|about|view-source):/i.test(tab.url)
-      || /^https:\/\/chrome\.google\.com\/webstore/i.test(tab.url)
-      || /^https:\/\/chromewebstore\.google\.com/i.test(tab.url);
+      || /^https:\/\/(chrome|chromewebstore)\.google\.com/i.test(tab.url);
     if (blocked) {
-      warnEl.textContent = "Chrome blocks recording on this page. Open a regular site (gmail.com, your CRM, etc.) first.";
+      warnEl.textContent = "Chrome blocks recording on this page. Open a regular site first.";
       warnEl.classList.remove("hidden");
     }
   });
+
+  // Record button
   d.querySelector<HTMLButtonElement>("#rec")!.onclick = async () => {
     const micEnabled = await getMicEnabled();
-    const mode = await getRecordingMode();
-    const tier = await getTier();
+    const mode       = await getRecordingMode();
+    const tier       = await getTier();
     const resp = await chrome.runtime.sendMessage({
       type: "popup:start_recording",
       mic_enabled: micEnabled,
@@ -424,124 +469,196 @@ function recordTab(): HTMLElement {
       warnEl.classList.remove("hidden");
     }
   };
+
   return d;
 }
+
+// ---- Library tab ----
 
 function libraryTab(): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 px-5 py-4 overflow-y-auto";
-  d.innerHTML = `<div class="label mb-3">Recordings</div><div id="list" class="space-y-2"></div>`;
-  loadLibrary(d.querySelector<HTMLDivElement>("#list")!);
+  d.className = "flex-1 flex flex-col px-5 py-4";
+
+  const searchWrap = document.createElement("div");
+  searchWrap.className = "mb-3";
+  searchWrap.innerHTML = `
+    <div style="position:relative;">
+      <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none;opacity:0.38;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FFD69C" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35" stroke-linecap="round"/></svg>
+      </span>
+      <input id="search" type="text" placeholder="Search recordings…" class="input" style="padding-left:30px;font-size:12px;" />
+    </div>
+  `;
+  d.appendChild(searchWrap);
+
+  const list = document.createElement("div");
+  list.id = "list";
+  list.className = "space-y-2 flex-1";
+  d.appendChild(list);
+
+  let allRecordings: Array<RecordingRow & { skills: SkillRow[] }> = [];
+
+  const renderList = (query: string) => {
+    const q = query.toLowerCase().trim();
+    const filtered = q
+      ? allRecordings.filter(r => (r.title || "").toLowerCase().includes(q))
+      : allRecordings;
+    renderCards(list, filtered);
+  };
+
+  searchWrap.querySelector<HTMLInputElement>("#search")!.oninput = (e) => {
+    renderList((e.target as HTMLInputElement).value);
+  };
+
+  loadLibraryData().then((data) => {
+    if (!data) return;
+    allRecordings = data;
+    renderCards(list, allRecordings);
+  });
+
   return d;
 }
 
-async function loadLibrary(container: HTMLDivElement): Promise<void> {
-  container.innerHTML = `<div class="text-muted text-xs">Loading…</div>`;
+async function loadLibraryData(): Promise<Array<RecordingRow & { skills: SkillRow[] }> | null> {
   const db = getDataSupabase();
-  // Explicit user_id filter for guests — belt-and-suspenders on top of RLS
-  // and a guard against the JWT-just-rotated edge case. Admins skip the
-  // filter so they can see every guest's recordings (RLS already permits
-  // admins to SELECT all rows; see migration 0003_admin_role.sql).
   const { data: authUser } = await getAuthSupabase().auth.getUser();
   const userId = authUser.user?.id;
-  if (!userId) {
-    container.innerHTML = `<div class="text-muted text-xs">Not signed in.</div>`;
-    return;
-  }
+  if (!userId) return null;
+
   let query = db
     .from("recordings")
     .select("*, skills(id,recording_id,user_id,version,title,body_md,kind,prompt_used,created_at)")
     .order("started_at", { ascending: false })
     .limit(50);
   if (!isAdmin()) query = query.eq("user_id", userId);
+
   const { data, error } = await query;
-  if (error) {
-    container.innerHTML = `<div class="text-accent text-xs">${escapeHtml(error.message)}</div>`;
-    return;
-  }
-  if (!data?.length) {
-    container.innerHTML = `<div class="glass p-5 text-center">
-      <div class="text-[12px] mb-1" style="color:rgba(255,232,199,0.55);">Nothing here yet.</div>
-      <div class="text-[11px]" style="color:rgba(255,232,199,0.4);">Hit Record on a real web page to make your first one.</div>
-    </div>`;
-    return;
-  }
+  if (error) return null;
+  return (data ?? []) as Array<RecordingRow & { skills: SkillRow[] }>;
+}
+
+function renderCards(container: HTMLElement, rows: Array<RecordingRow & { skills: SkillRow[] }>): void {
   container.innerHTML = "";
-  for (const r of data as Array<RecordingRow & { skills: SkillRow[] }>) {
-    const card = document.createElement("button");
-    card.className = "w-full glass text-left p-3.5 transition-all hover:scale-[1.01]";
-    card.style.cursor = "pointer";
-    const title = r.title || "Untitled recording";
-    const date = new Date(r.started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-    const dur = r.duration_ms ? `${Math.round(r.duration_ms / 1000)}s` : "—";
-    const status = r.status;
-    const hasSkill = (r.skills?.length ?? 0) > 0;
-    const isImprovement = r.mode === "improvement";
-    // Show a small chip indicating the recording's primary intent.
-    const modeBadge = isImprovement
-      ? `<span class="label" style="font-size:9px;color:#E07B39;background:rgba(224,123,57,0.12);padding:2px 6px;border-radius:4px;letter-spacing:0.04em;">improvement</span>`
-      : "";
-    // Both artifacts are generated for every recording. Show a hint when
-    // both rows are actually present so the user knows the picker is live.
-    const kindsPresent = new Set((r.skills ?? []).map((s) => s.kind ?? "skill"));
-    const hasBoth = kindsPresent.has("skill") && kindsPresent.has("improvement");
-    card.innerHTML = `
-      <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2">
-            <div class="text-[13px] font-medium truncate" style="color:#FFE8C7;">${escapeHtml(title)}</div>
-            ${modeBadge}
-          </div>
-          <div class="text-[11px] mt-1" style="color:rgba(255,232,199,0.45);">${escapeHtml(date)} · ${dur}</div>
-        </div>
-        <span class="${statusColor(status)}" style="font-family:'Bebas Neue',sans-serif; font-size:10px; letter-spacing:0.18em; text-transform:uppercase;">${status}</span>
+
+  if (!rows.length) {
+    container.innerHTML = `
+      <div class="glass p-6 text-center mt-2">
+        <div class="display text-[15px] mb-2">Nothing here yet</div>
+        <p class="text-[12px]" style="color:rgba(255,232,199,0.45);">Hit Record on any web page to make your first skill.</p>
       </div>
-      <div class="mt-2 text-[11px]" style="color:${hasSkill ? "#E4AF7A" : "rgba(255,232,199,0.4)"};">${hasSkill ? (hasBoth ? "✦ Skill + Improvements" : (isImprovement ? "✦ Brief ready" : "✦ Skill ready")) : "Generating…"}</div>
     `;
+    return;
+  }
+
+  for (const r of rows) {
+    const card = document.createElement("button");
+    card.className = "w-full glass library-card text-left";
+    card.style.padding = "12px 14px";
+    card.style.cursor = "pointer";
+
+    const title    = r.title || "Untitled recording";
+    const date     = new Date(r.started_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    const dur      = r.duration_ms ? `${Math.round(r.duration_ms / 1000)}s` : "—";
+    const hasSkill = (r.skills?.length ?? 0) > 0;
+    const kindsPresent = new Set((r.skills ?? []).map(s => s.kind ?? "skill"));
+    const hasBoth  = kindsPresent.has("skill") && kindsPresent.has("improvement");
+    const statusCls  = statusColor(r.status);
+    const kindBadge  = r.mode === "improvement"
+      ? `<span class="badge badge-orange" style="margin-left:4px;">brief</span>` : "";
+    const skillBadge = hasSkill
+      ? `<span class="badge badge-gold">${hasBoth ? "✦ Skill + Brief" : "✦ Skill"}</span>` : "";
+
+    // Skill excerpt from the first non-heading content line
+    const primarySkill = (r.skills ?? []).find(s => (s.kind ?? "skill") === "skill") ?? (r.skills ?? [])[0];
+    let excerpt = "";
+    if (primarySkill?.body_md) {
+      const { body } = splitFrontmatter(primarySkill.body_md);
+      excerpt = body
+        .replace(/^---[\s\S]*?---\n?/m, "")
+        .replace(/^#+\s+.*/gm, "")
+        .replace(/\*\*/g, "")
+        .replace(/\n+/g, " ")
+        .trim()
+        .slice(0, 90);
+    }
+
+    card.innerHTML = `
+      <div class="flex items-start gap-2.5">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <span class="text-[13px] font-semibold truncate" style="color:#FFE8C7;">${escapeHtml(title)}</span>
+            ${kindBadge}
+          </div>
+          <div class="flex items-center gap-2 mt-1">
+            <span class="text-[10px]" style="color:rgba(255,232,199,0.38);">${escapeHtml(date)} · ${dur}</span>
+            ${skillBadge}
+          </div>
+          ${excerpt ? `<div class="text-[10px] mt-1.5 leading-relaxed" style="color:rgba(255,232,199,0.32);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(excerpt)}…</div>` : ""}
+        </div>
+        <span class="${statusCls}" style="font-family:'Bebas Neue',sans-serif;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;flex-shrink:0;">${r.status}</span>
+      </div>
+      ${!hasSkill && r.status !== "failed" ? `<div class="text-[10px] mt-2" style="color:rgba(255,232,199,0.28);font-style:italic;">Generating…</div>` : ""}
+    `;
+
     card.onclick = () => {
-      const sorted = [...(r.skills ?? [])].sort((a, b) => b.version - a.version);
-      // Default to whichever kind matches the recording's primary intent.
+      const sorted     = [...(r.skills ?? [])].sort((a, b) => b.version - a.version);
       const primaryKind = (r.mode ?? "skill") as "skill" | "improvement";
-      const primary = sorted.find((s) => (s.kind ?? "skill") === primaryKind) ?? sorted[0] ?? null;
+      const primary    = sorted.find(s => (s.kind ?? "skill") === primaryKind) ?? sorted[0] ?? null;
       view = { kind: "skill", recording: r, skill: primary, allSkills: sorted };
       render();
     };
+
     container.appendChild(card);
   }
 }
 
-function statusColor(s: string): string {
-  if (s === "ready") return "status-ready";
-  if (s === "failed") return "status-failed";
-  if (s === "transcribing" || s === "uploading") return "status-progress";
-  return "status-idle";
-}
+
+// ---- Settings tab ----
 
 function settingsTab(): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 px-5 py-4 space-y-4";
+  d.className = "px-5 py-5 space-y-3";
+
   d.innerHTML = `
     <div class="glass p-4">
-      <div class="label mb-2">Account</div>
-      <div id="who" class="text-[13px]" style="color:#FFE8C7;">…</div>
-      <button id="signout" class="btn w-full mt-3">Sign out</button>
+      <div class="flex items-center gap-3 mb-4">
+        <div id="avatar" style="width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#C68A41,#7A4F1E);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'Bebas Neue',sans-serif;font-size:16px;color:#1a0a00;letter-spacing:0.08em;">?</div>
+        <div class="flex-1 min-w-0">
+          <div class="label" style="font-size:9px;margin-bottom:2px;">Signed in as</div>
+          <div id="who" class="text-[13px] truncate" style="color:#FFE8C7;">…</div>
+        </div>
+      </div>
+      <button id="signout" class="btn w-full">Sign out</button>
     </div>
+
     <div class="glass p-4">
-      <div class="label mb-2">Data</div>
-      <button id="del" class="btn w-full">Delete all my data</button>
-      <p class="text-[11px] leading-relaxed mt-2" style="color:rgba(255,232,199,0.45);">Cascades through recordings, events, screenshots, audio, and skills. This cannot be undone.</p>
+      <div class="label mb-3" style="font-size:9px;">Data</div>
+      <button id="del" class="btn btn-danger w-full text-[12px]">Delete all my data</button>
+      <p class="text-[11px] leading-relaxed mt-2" style="color:rgba(255,232,199,0.38);">Cascades through recordings, events, screenshots, audio, and skills. Cannot be undone.</p>
+    </div>
+
+    <div class="glass p-4">
+      <div class="label mb-1" style="font-size:9px;">Version</div>
+      <div class="text-[12px]" style="color:rgba(255,232,199,0.45);">Scout v0.2.0 · Orage AI Agency</div>
     </div>
   `;
+
   const auth = getAuthSupabase();
-  const db = getDataSupabase();
+  const db   = getDataSupabase();
+
   auth.auth.getUser().then(({ data }) => {
-    d.querySelector<HTMLDivElement>("#who")!.textContent = data.user?.email ?? "—";
+    const email = data.user?.email ?? "—";
+    d.querySelector<HTMLDivElement>("#who")!.textContent = email;
+    const initials = email.slice(0, 2).toUpperCase();
+    d.querySelector<HTMLDivElement>("#avatar")!.textContent = initials;
   });
+
   d.querySelector<HTMLButtonElement>("#signout")!.onclick = async () => {
     await auth.auth.signOut();
     view = { kind: "signed_out", mode: "signin" };
     render();
   };
+
   d.querySelector<HTMLButtonElement>("#del")!.onclick = async () => {
     if (!confirm("Permanently delete all of your recordings and skills?")) return;
     const { data: u } = await auth.auth.getUser();
@@ -549,65 +666,94 @@ function settingsTab(): HTMLElement {
     await db.from("recordings").delete().eq("user_id", u.user.id);
     alert("Deleted.");
   };
+
   return d;
 }
 
-// ---- Recording state ----
+// ---- Recording state view ----
 
 function micBadgeHtml(s: RecordingSessionState): string {
-  if (s.mic_enabled === false) {
-    return `<span class="label" style="font-size:9px;color:rgba(255,232,199,0.35);" title="Voice narration disabled">🎙 off</span>`;
-  }
-  if (s.audio_supported) {
-    return `<span class="label" style="font-size:9px;color:#15803D;display:inline-flex;align-items:center;gap:3px;" title="Microphone active — narrate what you're doing"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#15803D;box-shadow:0 0 0 0 rgba(21,128,61,0.55);animation:pulse-dot 1.6s ease-in-out infinite;"></span>🎙 live</span>`;
-  }
-  return `<span class="label" style="font-size:9px;color:#B45309;" title="Mic denied or unavailable. Recording continues without narration.">🎙 denied</span>`;
+  if (s.mic_enabled === false)
+    return `<span class="badge badge-muted">🎙 off</span>`;
+  if (s.audio_supported)
+    return `<span style="display:inline-flex;align-items:center;gap:4px;font-family:'Bebas Neue',sans-serif;font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:#4ADE80;"><span style="width:6px;height:6px;border-radius:50%;background:#4ADE80;animation:pulse-dot 1.6s ease-in-out infinite;display:inline-block;"></span>MIC LIVE</span>`;
+  return `<span class="badge badge-orange">🎙 denied</span>`;
 }
 
 function recordingView(s: RecordingSessionState): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 px-5 py-5 flex flex-col gap-3";
+  d.className = "px-5 py-5 flex flex-col gap-4";
+
   const startedMs = s.started_at;
   const audioBadge = micBadgeHtml(s);
   const tabTitle = s.active_tab_title?.trim() || (s.active_tab_url ? new URL(s.active_tab_url).hostname : "—");
+
   d.innerHTML = `
-    <div class="glass p-4">
-      <div class="flex items-center gap-2">
+    <!-- Timer hero -->
+    <div class="glass-hero p-5 text-center">
+      <div class="flex items-center justify-center gap-2.5 mb-3">
         <span class="record-dot"></span>
-        <span class="display text-[15px]" style="color:#E4AF7A;">Recording</span>
+        <span class="display text-[13px]" style="color:#E4AF7A;">Recording</span>
         ${audioBadge}
-        <span id="t" class="ml-auto font-mono tabular-nums text-[13px]" style="color:#E4AF7A;">00:00</span>
       </div>
-      <div id="tabname" class="text-[11px] mt-3 truncate" style="color:rgba(255,232,199,0.55);" title="${escapeHtml(tabTitle)}">on <span style="color:#FFE8C7;">${escapeHtml(tabTitle)}</span></div>
-      <div id="evcount" class="text-[11px] mt-1" style="color:rgba(255,232,199,0.45);">${s.event_count ?? 0} events · ${s.shot_count ?? 0} screenshots</div>
+      <div id="t" class="display text-[54px]" style="color:#FFE8C7;letter-spacing:0.04em;font-variant-numeric:tabular-nums;">00:00</div>
+      <div id="tabname" class="text-[11px] mt-2 truncate" style="color:rgba(255,232,199,0.45);" title="${escapeHtml(tabTitle)}">
+        on <span style="color:#FFE8C7;">${escapeHtml(tabTitle)}</span>
+      </div>
     </div>
+
+    <!-- Stats row -->
+    <div class="glass p-3 flex items-center justify-between">
+      <div>
+        <div id="evcount" class="text-[12px]" style="color:rgba(255,232,199,0.65);">${s.event_count ?? 0} events</div>
+        <div id="shotcount" class="text-[10px] mt-0.5" style="color:rgba(255,232,199,0.35);">${s.shot_count ?? 0} screenshots</div>
+      </div>
+      <div class="text-right">
+        <div class="label" style="font-size:8px;">tier</div>
+        <div id="tier-display" class="text-[11px] mt-0.5" style="color:rgba(255,232,199,0.50);">Standard</div>
+      </div>
+    </div>
+
+    <!-- Controls -->
     <div class="flex gap-2">
       <button id="pause" class="btn flex-1">${s.is_paused ? "Resume" : "Pause"}</button>
       <button id="stop" class="btn btn-primary flex-1">Stop</button>
     </div>
-    <p class="text-[11px] leading-relaxed mt-1" style="color:rgba(255,232,199,0.45);">Switch tabs freely — the floating control bar in the page is also yours.</p>
+
+    <p class="text-[11px] leading-relaxed text-center" style="color:rgba(255,232,199,0.35);">Switch tabs freely — the floating bar follows you.</p>
   `;
+
+  // Show saved tier
+  void getTier().then(t => {
+    const el = d.querySelector<HTMLDivElement>("#tier-display");
+    if (el) el.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+  });
+
+  // Live timer
   const tEl = d.querySelector<HTMLSpanElement>("#t")!;
-  setInterval(() => {
-    const ms = Date.now() - startedMs;
+  const timerInterval = setInterval(() => {
+    const ms  = Date.now() - startedMs;
     const sec = Math.floor(ms / 1000) % 60;
     const min = Math.floor(ms / 60000);
     tEl.textContent = `${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
   }, 500);
+
+  // Clean up interval when view changes
+  const observer = new MutationObserver(() => {
+    if (!d.isConnected) { clearInterval(timerInterval); observer.disconnect(); }
+  });
+  observer.observe(root, { childList: true, subtree: true });
+
   d.querySelector<HTMLButtonElement>("#pause")!.onclick = async () => {
     const t = s.is_paused ? "popup:resume_recording" : "popup:pause_recording";
     await chrome.runtime.sendMessage({ type: t } satisfies RuntimeMessage);
     s.is_paused = !s.is_paused;
     render();
   };
+
   d.querySelector<HTMLButtonElement>("#stop")!.onclick = async () => {
     const recordingId = s.recording_id;
-    // Persist so re-opening the popup picks up where we left off.
     await chrome.storage.local.set({ [RECENT_KEY]: recordingId });
-    // Fire-and-forget the stop message — the mic releases immediately on the
-    // background side. Jump straight to "any other thoughts?" so upload +
-    // transcribe run in the background while the user (optionally) adds
-    // context. The user is never staring at a blank wait.
     void chrome.runtime.sendMessage({ type: "popup:stop_recording" } satisfies RuntimeMessage);
     const db = getDataSupabase();
     const { data: rec } = await db.from("recordings").select("*").eq("id", recordingId).single();
@@ -619,81 +765,81 @@ function recordingView(s: RecordingSessionState): HTMLElement {
       render();
     }
   };
+
   return d;
 }
 
-// One last prompt before we kick off skill generation: "any other thoughts?"
-// The user can either skip and let the agent work from events + narration
-// alone, or paste a few lines explaining the WHY behind a non-obvious step.
-// That extra text is forwarded to /generate-skill via the `extra` param.
+// ---- Extra context view ----
+
 function extraContextView(rec: RecordingRow): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 px-5 py-5 flex flex-col gap-3";
-  const dur = rec.duration_ms ? `${Math.round(rec.duration_ms / 1000)}s recording` : "Recording";
+  d.className = "px-5 py-5 flex flex-col gap-3";
+
+  const dur = rec.duration_ms ? `${Math.round(rec.duration_ms / 1000)}s` : "";
+
   d.innerHTML = `
-    <div class="glass p-4 flex flex-col gap-3">
-      <div class="display text-[16px]" style="color:#E4AF7A;">Any other thoughts?</div>
-      <div class="text-[12px] leading-relaxed" style="color:rgba(255,232,199,0.65);">
-        ${escapeHtml(dur)} captured. If a step worked a specific way for a reason —
-        a rule, an exception, why option A vs B — drop a note here so the
-        skill captures it. Optional.
+    <div class="glass p-5 flex flex-col gap-3">
+      <div>
+        <div class="display text-[18px]">Any other thoughts?</div>
+        ${dur ? `<div class="text-[10px] mt-1" style="color:rgba(255,232,199,0.40);">${dur} captured · upload running in background</div>` : ""}
       </div>
-      <textarea id="ec" rows="5" placeholder="e.g. We always pick the earliest delivery date if the customer is in California — Prop 65 thing." style="resize:vertical;min-height:90px;"></textarea>
+      <p class="text-[12px] leading-relaxed" style="color:rgba(255,232,199,0.60);">
+        If a step had a non-obvious reason — a rule, an exception, a why behind option A vs B — drop a note so the skill captures it.
+      </p>
+      <textarea id="ec" class="input" rows="5"
+        placeholder="e.g. We always pick earliest delivery for California orders — Prop 65 compliance." style="resize:vertical;min-height:90px;"></textarea>
       <div class="flex gap-2">
         <button id="ec-skip" class="btn flex-1">Skip</button>
-        <button id="ec-save" class="btn btn-primary flex-1">Save & generate</button>
+        <button id="ec-save" class="btn btn-primary flex-1">Save &amp; generate</button>
       </div>
-      <div class="text-[10px] leading-relaxed" style="color:rgba(255,232,199,0.45);">
-        Upload + transcription is already running in the background. Your note is woven into the skill alongside the recording.
-      </div>
+      <p class="text-[10px]" style="color:rgba(255,232,199,0.32);">Cmd/Ctrl+Enter to submit.</p>
     </div>
   `;
-  const ta = d.querySelector<HTMLTextAreaElement>("#ec")!;
+
+  const ta   = d.querySelector<HTMLTextAreaElement>("#ec")!;
   const skip = d.querySelector<HTMLButtonElement>("#ec-skip")!;
   const save = d.querySelector<HTMLButtonElement>("#ec-save")!;
+
   const proceed = (extra?: string) => {
     view = { kind: "processing", recording: rec, stage: "uploading" };
     render();
     void runAutoGenerate(rec, extra);
   };
+
   skip.onclick = () => proceed(undefined);
   save.onclick = () => proceed(ta.value.trim() || undefined);
-  // Cmd/Ctrl+Enter shortcut for keyboard users.
-  ta.onkeydown = (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") proceed(ta.value.trim() || undefined);
-  };
-  // Autofocus so the user can start typing immediately.
+  ta.onkeydown = (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") proceed(ta.value.trim() || undefined); };
   setTimeout(() => ta.focus(), 50);
+
   return d;
 }
 
-// Auto-generate flow: poll the recording row through its statuses, then call
-// /generate-skill. Updates the popup's stage label as we go.
+// ---- Auto-generate flow (SSE streaming) ----
+
 async function runAutoGenerate(rec: RecordingRow, extra?: string): Promise<void> {
-  const auth = getAuthSupabase();
-  const db = getDataSupabase();
+  const auth     = getAuthSupabase();
+  const db       = getDataSupabase();
   const deadline = Date.now() + 180_000;
-  // Phase 1 — wait for status='ready' (transcribe finished).
+
+  // Phase 1: poll until recording is ready (upload + transcription done)
   while (Date.now() < deadline) {
     const { data } = await db.from("recordings").select("status").eq("id", rec.id).single();
     const status = data?.status as string | undefined;
     if (view.kind !== "processing" || view.recording.id !== rec.id) return;
-    if (status === "uploading") view.stage = "uploading";
+    if (status === "uploading")         view.stage = "uploading";
     else if (status === "transcribing") view.stage = "transcribing";
-    else if (status === "ready") break;
-    else if (status === "failed") {
-      view.error = "Recording failed during upload or transcription.";
-      render();
-      return;
-    }
+    else if (status === "ready")        break;
+    else if (status === "failed") { view.error = "Recording failed during upload or transcription."; render(); return; }
     render();
     await new Promise((r) => setTimeout(r, 1500));
   }
   if (view.kind !== "processing" || view.recording.id !== rec.id) return;
 
-  // Phase 2 — generate the skill.
+  // Phase 2: skill drafting with live streaming preview
   view.stage = "drafting";
+  liveStream = "";
   render();
+
   try {
     const { data: sess } = await auth.auth.getSession();
     const res = await fetch(functionUrl("generate-skill"), {
@@ -705,26 +851,80 @@ async function runAutoGenerate(rec: RecordingRow, extra?: string): Promise<void>
       body: JSON.stringify({ recording_id: rec.id, extra }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-    const skill = (await res.json()) as SkillRow;
-    const { data: refreshed } = await db.from("recordings").select("*").eq("id", rec.id).single();
-    if (view.kind === "processing" && view.recording.id === rec.id) {
-      // Every recording now produces BOTH a skill row and an improvement
-      // row (response.all). Pull all of them so the kind+version pickers
-      // work on first render. Auto-download fires only on the SKILL row
-      // (the improvement is a paste-into-Claude artifact, not a zip).
-      const allFromResponse = ((skill as SkillRow & { all?: SkillRow[] }).all ?? [skill]) as SkillRow[];
-      const skillKindRow = allFromResponse.find((s) => (s.kind ?? "skill") === "skill") ?? skill;
-      let autoDownloaded = false;
-      if (isAdmin()) {
-        try { downloadClaudeSkill(skillKindRow); autoDownloaded = true; }
-        catch (e) { console.warn("[scout] auto-download failed", e); }
+
+    const contentType = res.headers.get("content-type") ?? "";
+
+    if (contentType.includes("text/event-stream")) {
+      // New path: SSE streaming — updates DOM directly without full re-renders
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let sseBuf = "";
+
+      outer: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        sseBuf += decoder.decode(value, { stream: true });
+        const lines = sseBuf.split("\n");
+        sseBuf = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6).trim();
+          if (!raw || raw === "[DONE]") continue;
+          let evt: Record<string, unknown>;
+          try { evt = JSON.parse(raw); } catch { continue; }
+
+          if (evt.type === "skill_chunk") {
+            liveStream += (evt.text as string) ?? "";
+            const el = document.getElementById("stream-preview");
+            if (el) {
+              el.innerHTML = marked.parse(liveStream, { async: false }) as string;
+              el.scrollTop = el.scrollHeight;
+            }
+          } else if (evt.type === "done") {
+            const allSkills = (evt.all as SkillRow[] | undefined) ?? [evt as unknown as SkillRow];
+            const skillKindRow = allSkills.find(s => (s.kind ?? "skill") === "skill") ?? allSkills[0];
+            let autoDownloaded = false;
+            if (isAdmin()) {
+              try { downloadClaudeSkill(skillKindRow); autoDownloaded = true; }
+              catch (e) { console.warn("[scout] auto-download failed", e); }
+            }
+            const { data: refreshed } = await db.from("recordings").select("*").eq("id", rec.id).single();
+            if (view.kind === "processing" && view.recording.id === rec.id) {
+              const recMode    = (refreshed as RecordingRow | null)?.mode ?? rec.mode ?? "skill";
+              const primaryRow = allSkills.find(s => (s.kind ?? "skill") === recMode) ?? allSkills[0];
+              liveStream = "";
+              view = { kind: "skill", recording: (refreshed as RecordingRow) ?? rec, skill: primaryRow, allSkills, autoDownloaded };
+              render();
+            }
+            break outer;
+          } else if (evt.type === "error") {
+            if (view.kind === "processing" && view.recording.id === rec.id) {
+              view.error = evt.message as string;
+              render();
+            }
+            break outer;
+          }
+        }
       }
-      // Default the open view to whichever kind matches the recording's
-      // primary intent (recording.mode). Falls back to the first row.
-      const recMode = (refreshed as RecordingRow | null)?.mode ?? rec.mode ?? "skill";
-      const primaryRow = allFromResponse.find((s) => (s.kind ?? "skill") === recMode) ?? allFromResponse[0];
-      view = { kind: "skill", recording: (refreshed as RecordingRow) ?? rec, skill: primaryRow, allSkills: allFromResponse, autoDownloaded };
-      render();
+    } else {
+      // Legacy path: JSON response (old edge function without streaming)
+      const skill = (await res.json()) as SkillRow;
+      const { data: refreshed } = await db.from("recordings").select("*").eq("id", rec.id).single();
+      if (view.kind === "processing" && view.recording.id === rec.id) {
+        const allFromResponse  = ((skill as SkillRow & { all?: SkillRow[] }).all ?? [skill]) as SkillRow[];
+        const skillKindRow     = allFromResponse.find(s => (s.kind ?? "skill") === "skill") ?? skill;
+        let autoDownloaded = false;
+        if (isAdmin()) {
+          try { downloadClaudeSkill(skillKindRow); autoDownloaded = true; }
+          catch (e) { console.warn("[scout] auto-download failed", e); }
+        }
+        const recMode    = (refreshed as RecordingRow | null)?.mode ?? rec.mode ?? "skill";
+        const primaryRow = allFromResponse.find(s => (s.kind ?? "skill") === recMode) ?? allFromResponse[0];
+        liveStream = "";
+        view = { kind: "skill", recording: (refreshed as RecordingRow) ?? rec, skill: primaryRow, allSkills: allFromResponse, autoDownloaded };
+        render();
+      }
     }
   } catch (e) {
     if (view.kind === "processing" && view.recording.id === rec.id) {
@@ -734,43 +934,72 @@ async function runAutoGenerate(rec: RecordingRow, extra?: string): Promise<void>
   }
 }
 
+// ---- Processing view ----
+
 function processingView(rec: RecordingRow, stage: "uploading" | "transcribing" | "drafting", error?: string): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 px-5 py-6 flex flex-col gap-4";
-  const stages: Array<{ id: typeof stage; label: string }> = [
-    { id: "uploading", label: "Uploading audio + screenshots" },
-    { id: "transcribing", label: "Transcribing narration" },
-    { id: "drafting", label: "Drafting your skill" },
+  d.className = "px-5 py-6 flex flex-col gap-4";
+
+  const stages: Array<{ id: typeof stage; label: string; sub: string }> = [
+    { id: "uploading",   label: "Uploading",    sub: "audio + screenshots" },
+    { id: "transcribing",label: "Transcribing", sub: "voice narration" },
+    { id: "drafting",    label: "Drafting",     sub: "your skill files" },
   ];
   const currentIdx = stages.findIndex((s) => s.id === stage);
-  const stageHtml = stages
-    .map((s, i) => {
-      const done = i < currentIdx;
-      const active = i === currentIdx;
-      const dotColor = done ? "#15803D" : active ? "#E4AF7A" : "rgba(255,232,199,0.20)";
-      const dotInner = active ? `<span style="position:absolute;inset:0;border-radius:50%;border:2px solid #E4AF7A;animation:scout-spin 1.4s linear infinite;border-top-color:transparent;"></span>` : "";
-      const labelColor = done ? "rgba(255,232,199,0.75)" : active ? "#FFE8C7" : "rgba(255,232,199,0.35)";
-      return `
-        <div class="flex items-center gap-3">
-          <span style="position:relative;display:inline-block;width:14px;height:14px;border-radius:50%;background:${dotColor};">${dotInner}</span>
-          <span class="text-[13px]" style="color:${labelColor};">${s.label}</span>
-        </div>`;
-    })
-    .join("");
+
+  const stepsHtml = stages.map((s, i) => {
+    const done   = i < currentIdx;
+    const active = i === currentIdx;
+    const dotCls = done ? "step-dot done" : active ? "step-dot active" : "step-dot pending";
+    const labelColor = done ? "rgba(255,232,199,0.65)" : active ? "#FFE8C7" : "rgba(255,232,199,0.28)";
+    const subColor   = done ? "rgba(255,232,199,0.35)" : active ? "rgba(255,232,199,0.50)" : "rgba(255,232,199,0.18)";
+    return `
+      <div class="step-row">
+        <span class="${dotCls}"></span>
+        <div>
+          <div class="text-[13px]" style="color:${labelColor};font-weight:600;">${s.label}</div>
+          <div class="text-[10px]" style="color:${subColor};">${s.sub}</div>
+        </div>
+      </div>
+    `;
+  }).join("");
+
   d.innerHTML = `
     <div class="glass p-5">
-      <div class="display text-[16px] mb-1" style="color:#E4AF7A;">${error ? "Something went wrong" : "Finishing up"}</div>
-      <div class="text-[11px] mb-4" style="color:rgba(255,232,199,0.5);">${error ? "We saved your recording — you can retry from the library." : `${rec.duration_ms ? Math.round(rec.duration_ms/1000) + "s recording" : "Processing recording"} · this usually takes 30–60s`}</div>
-      ${error ? `<div class="text-[12px] glass-strong p-3 mb-3" style="color:#DC2626;">${escapeHtml(error)}</div>` : `<div class="flex flex-col gap-3">${stageHtml}</div>`}
+      <div class="display text-[18px] mb-1">${error ? "Something went wrong" : "Finishing up"}</div>
+      <div class="text-[11px] mb-4" style="color:rgba(255,232,199,0.45);">
+        ${error
+          ? "Your recording was saved — retry from the library."
+          : `${rec.duration_ms ? Math.round(rec.duration_ms / 1000) + "s recording" : "Processing"} · usually 30–60s`}
+      </div>
+      ${error
+        ? `<div class="glass-strong p-3 text-[12px] mb-3" style="color:#F87171;">${escapeHtml(error)}</div>`
+        : stepsHtml}
     </div>
-    ${error ? `<button id="back" class="btn">Back to Library</button>` : `
-      <div class="glass p-3 flex items-start gap-2.5">
-        <span style="color:#B68039;font-size:14px;flex-shrink:0;">⓵</span>
-        <div class="flex-1 text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.55);">
-          You can close this popup. We'll save the skill to your Downloads when it's ready, and the popup picks up here when you reopen it.
+    ${!error && stage === "drafting" ? `
+      <div class="glass p-3 animate-slide-up">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="label" style="font-size:8px;">Writing your skill</span>
+          <span class="streaming-cursor"></span>
         </div>
-      </div>`}
+        <div id="stream-preview" class="streaming-preview skill-md"></div>
+      </div>
+    ` : ""}
+    ${error
+      ? `<button id="back" class="btn">Back to Library</button>`
+      : `<div class="glass p-3 flex items-start gap-2.5">
+          <span style="color:#B68039;font-size:13px;flex-shrink:0;margin-top:1px;">ⓘ</span>
+          <div class="text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.45);">You can close this popup — your skill saves to Downloads when it's ready. Reopen to pick up here.</div>
+        </div>`}
   `;
+
+  // If there's already buffered stream content (popup reopened mid-stream),
+  // populate the preview immediately.
+  if (!error && stage === "drafting" && liveStream) {
+    const el = d.querySelector<HTMLDivElement>("#stream-preview");
+    if (el) el.innerHTML = marked.parse(liveStream, { async: false }) as string;
+  }
+
   if (error) {
     d.querySelector<HTMLButtonElement>("#back")!.onclick = () => {
       view = { kind: "idle", tab: "library" };
@@ -780,37 +1009,51 @@ function processingView(rec: RecordingRow, stage: "uploading" | "transcribing" |
   return d;
 }
 
-// ---- Skill side-panel view ----
+// ---- Skill view ----
 
-function skillView(rec: RecordingRow, skill: SkillRow | null, allSkills: SkillRow[] = [], autoDownloaded = false): HTMLElement {
+function skillView(
+  rec: RecordingRow,
+  skill: SkillRow | null,
+  allSkills: SkillRow[] = [],
+  autoDownloaded = false,
+): HTMLElement {
   const d = document.createElement("div");
-  d.className = "flex-1 px-5 py-4 overflow-y-auto";
+  d.className = "px-5 py-4 overflow-y-auto";
 
-  const back = document.createElement("button");
-  back.className = "btn btn-ghost mb-3";
-  back.textContent = "← Library";
-  back.onclick = () => {
+  // Back + header row
+  const topRow = document.createElement("div");
+  topRow.className = "flex items-start justify-between gap-2 mb-3";
+  topRow.innerHTML = `
+    <button id="back" class="btn btn-ghost" style="padding:5px 8px;font-size:11px;">← Library</button>
+    <div class="text-right">
+      <span class="${statusColor(rec.status)}" style="font-family:'Bebas Neue',sans-serif;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;">${rec.status}</span>
+    </div>
+  `;
+  topRow.querySelector<HTMLButtonElement>("#back")!.onclick = () => {
     void chrome.storage.local.remove(RECENT_KEY);
     view = { kind: "idle", tab: "library" };
     render();
   };
-  d.appendChild(back);
+  d.appendChild(topRow);
 
+  // Recording meta
   const meta = document.createElement("div");
   meta.className = "glass p-4 mb-3";
   meta.innerHTML = `
-    <div class="display text-[18px] mb-1" style="color:#E4AF7A;">${escapeHtml(rec.title || "Untitled")}</div>
-    <div class="text-[11px]" style="color:rgba(255,232,199,0.5);">${escapeHtml(new Date(rec.started_at).toLocaleString())} · ${
-    rec.duration_ms ? Math.round(rec.duration_ms / 1000) + "s" : "—"
-  } · <span class="${statusColor(rec.status)}" style="font-family:'Bebas Neue',sans-serif;letter-spacing:0.18em;text-transform:uppercase;">${rec.status}</span></div>
+    <div class="display text-[17px] mb-1" style="color:#E4AF7A;">${escapeHtml(rec.title || "Untitled")}</div>
+    <div class="text-[11px]" style="color:rgba(255,232,199,0.40);">
+      ${escapeHtml(new Date(rec.started_at).toLocaleString(undefined, { month:"short", day:"numeric", hour:"numeric", minute:"2-digit" }))}
+      · ${rec.duration_ms ? Math.round(rec.duration_ms / 1000) + "s" : "—"}
+    </div>
   `;
   d.appendChild(meta);
 
+  // No skill yet
   if (!skill) {
     const gen = document.createElement("div");
     gen.className = "glass p-4";
     gen.innerHTML = `
-      <div class="text-[13px] mb-3" style="color:#FFE8C7;">No skill generated yet for this recording.</div>
+      <div class="text-[13px] mb-3" style="color:#FFE8C7;">No skill generated yet.</div>
       <button id="gen" class="btn btn-primary w-full">Generate Skill</button>
       <div id="genstatus" class="text-[11px] mt-2" style="color:rgba(255,232,199,0.55);"></div>
     `;
@@ -819,38 +1062,31 @@ function skillView(rec: RecordingRow, skill: SkillRow | null, allSkills: SkillRo
     return d;
   }
 
-  // Guest mode: skill exists but the user doesn't get to see, copy, or
-  // download it. Orage owns the skill and deploys it to their hosted agent.
+  // Guest mode
   if (!isAdmin()) {
     const guestNote = document.createElement("div");
     guestNote.className = "glass p-4";
     guestNote.innerHTML = `
-      <div class="display text-[15px] mb-2" style="color:#E4AF7A;">Recording captured</div>
-      <div class="text-[12px] leading-relaxed" style="color:rgba(255,232,199,0.7);">Your Orage admin will turn this into a skill for your hosted agent. Nothing else for you to do here.</div>
+      <div class="display text-[15px] mb-2">Recording captured</div>
+      <div class="text-[12px] leading-relaxed" style="color:rgba(255,232,199,0.65);">Your Orage admin will turn this into a skill for your hosted agent.</div>
     `;
     d.appendChild(guestNote);
     return d;
   }
 
-  // Kind picker — every recording produces both a Skill and an
-  // Improvements brief. Show pills to switch between them when both exist.
+  // Kind picker (skill ↔ improvements)
   const currentKind = (skill?.kind ?? "skill") as "skill" | "improvement";
-  const kindsAvailable = Array.from(new Set(allSkills.map((s) => (s.kind ?? "skill") as "skill" | "improvement")));
+  const kindsAvailable = Array.from(new Set(allSkills.map(s => (s.kind ?? "skill") as "skill" | "improvement")));
   if (kindsAvailable.length > 1) {
     const kindPicker = document.createElement("div");
     kindPicker.className = "flex gap-1.5 mb-2";
-    const labels: Record<"skill" | "improvement", string> = {
-      skill: "Skill",
-      improvement: "Improvements",
-    };
     for (const k of ["skill", "improvement"] as const) {
       if (!kindsAvailable.includes(k)) continue;
       const pill = document.createElement("button");
       pill.className = `tab-pill${k === currentKind ? " active" : ""}`;
-      pill.textContent = labels[k];
+      pill.textContent = k === "skill" ? "Skill" : "Improvements";
       pill.onclick = () => {
-        // Switch to the latest version of the selected kind.
-        const next = [...allSkills.filter((s) => (s.kind ?? "skill") === k)].sort((a, b) => b.version - a.version)[0];
+        const next = [...allSkills.filter(s => (s.kind ?? "skill") === k)].sort((a, b) => b.version - a.version)[0];
         if (next) {
           view = { kind: "skill", recording: rec, skill: next, allSkills, autoDownloaded: false };
           render();
@@ -861,15 +1097,14 @@ function skillView(rec: RecordingRow, skill: SkillRow | null, allSkills: SkillRo
     d.appendChild(kindPicker);
   }
 
-  // Version picker — only versions of the currently-displayed kind.
-  const sameKind = allSkills.filter((s) => (s.kind ?? "skill") === currentKind);
+  // Version picker
+  const sameKind = allSkills.filter(s => (s.kind ?? "skill") === currentKind);
   if (sameKind.length > 1) {
     const picker = document.createElement("div");
     picker.className = "flex flex-wrap gap-1.5 mb-3";
     for (const v of sameKind) {
       const pill = document.createElement("button");
-      const active = skill && v.id === skill.id;
-      pill.className = `tab-pill${active ? " active" : ""}`;
+      pill.className = `tab-pill${v.id === skill?.id ? " active" : ""}`;
       pill.textContent = `v${v.version}`;
       pill.title = new Date(v.created_at).toLocaleString();
       pill.onclick = () => {
@@ -881,102 +1116,107 @@ function skillView(rec: RecordingRow, skill: SkillRow | null, allSkills: SkillRo
     d.appendChild(picker);
   }
 
-  // Skill ready. If we just auto-downloaded, show a friendly confirmation
-  // banner above the actions so the user knows the zip is already in their
-  // Downloads folder.
+  // Auto-downloaded banner
   if (autoDownloaded) {
     const banner = document.createElement("div");
-    banner.className = "glass p-3 mb-3 flex items-center gap-2";
-    banner.style.borderColor = "rgba(21,128,61,0.45)";
+    banner.className = "glass p-3 mb-3 flex items-center gap-2.5";
+    banner.style.borderColor = "rgba(74,222,128,0.30)";
     banner.innerHTML = `
-      <span style="display:inline-flex;width:20px;height:20px;border-radius:50%;background:#15803D;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:bold;flex-shrink:0;">✓</span>
-      <div class="flex-1">
-        <div class="text-[12px] font-medium" style="color:#FFE8C7;">Saved to Downloads</div>
-        <div class="text-[10px]" style="color:rgba(255,232,199,0.55);">Extract the .zip into <code style="font-family:'JetBrains Mono',monospace;">~/.claude/skills/</code></div>
+      <span style="width:20px;height:20px;border-radius:50%;background:#15803D;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px;color:#fff;font-weight:700;">✓</span>
+      <div>
+        <div class="text-[12px] font-semibold" style="color:#FFE8C7;">Saved to Downloads</div>
+        <div class="text-[10px]" style="color:rgba(255,232,199,0.45);">Extract the .zip into <code style="font-family:monospace;color:#E4AF7A;">~/.claude/skills/</code></div>
       </div>
     `;
     d.appendChild(banner);
   }
 
-  // Improvement briefs have a different action set: the primary action is
-  // "Copy for Claude Code" (the brief itself, paste-ready), no zip, no
-  // dry-run. Skills keep the existing controls.
+  // Action bar
   const isImprovement = skill.kind === "improvement" || rec.mode === "improvement";
   const actions = document.createElement("div");
   actions.className = "flex flex-col gap-2 mb-3";
+
   if (isImprovement) {
     actions.innerHTML = `
-      <button id="cc-copy" class="btn btn-primary w-full">📋 Copy for Claude Code</button>
-      <div class="grid grid-cols-3 gap-2">
+      <button id="cc-copy" class="btn btn-primary w-full">Copy for Claude Code</button>
+      <div class="grid grid-cols-2 gap-2">
         <button id="cp" class="btn text-[11px]">Copy raw</button>
         <button id="dl" class="btn text-[11px]">Save .md</button>
-        <button id="rg" class="btn text-[11px]">Regenerate</button>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <button id="edit-btn" class="btn text-[11px]">Edit</button>
+        <button id="refine-btn" class="btn text-[11px]">Refine with AI</button>
       </div>
     `;
     actions.querySelector<HTMLButtonElement>("#cc-copy")!.onclick = async () => {
       await navigator.clipboard.writeText(formatBriefForClaudeCode(skill, rec));
       const b = actions.querySelector<HTMLButtonElement>("#cc-copy")!;
       b.textContent = "Copied — paste into Claude Code";
-      setTimeout(() => { b.textContent = "📋 Copy for Claude Code"; }, 2500);
+      setTimeout(() => { b.textContent = "Copy for Claude Code"; }, 2500);
     };
     actions.querySelector<HTMLButtonElement>("#dl")!.onclick = () => downloadMd(skill);
     actions.querySelector<HTMLButtonElement>("#cp")!.onclick = async () => {
       await navigator.clipboard.writeText(skill.body_md);
-      actions.querySelector<HTMLButtonElement>("#cp")!.textContent = "Copied";
+      const b = actions.querySelector<HTMLButtonElement>("#cp")!;
+      b.textContent = "Copied";
+      setTimeout(() => { b.textContent = "Copy raw"; }, 1500);
     };
-    actions.querySelector<HTMLButtonElement>("#rg")!.onclick = () => {
-      const extra = prompt("Optional: extra guidance for regeneration", "");
-      generate(rec.id, d, extra ?? undefined);
+    actions.querySelector<HTMLButtonElement>("#edit-btn")!.onclick = (e) => {
+      toggleEditor(d, skill, e.currentTarget as HTMLButtonElement);
     };
+    actions.querySelector<HTMLButtonElement>("#refine-btn")!.onclick = () => toggleRefinePanel(d, rec, skill, allSkills);
   } else {
     actions.innerHTML = `
-      <button id="claude" class="btn ${autoDownloaded ? "" : "btn-primary"} w-full">${autoDownloaded ? "Save again" : "⬇ Save as Claude Code skill"}</button>
-      <button id="dryrun" class="btn w-full">⚙ Test in cloud (dry-run)</button>
+      <button id="claude" class="btn ${autoDownloaded ? "" : "btn-primary"} w-full">
+        ${autoDownloaded ? "Save again" : "Save as Claude Code skill"}
+      </button>
       <div class="grid grid-cols-3 gap-2">
         <button id="cp" class="btn text-[11px]">Copy</button>
         <button id="dl" class="btn text-[11px]">Save .md</button>
-        <button id="rg" class="btn text-[11px]">Regenerate</button>
+        <button id="dryrun" class="btn text-[11px]">Dry run</button>
       </div>
-      <pre id="dryout" class="text-[10px] hidden whitespace-pre-wrap" style="background:rgba(0,0,0,0.5);padding:8px;border-radius:6px;color:rgba(255,232,199,0.8);max-height:200px;overflow-y:auto;"></pre>
+      <div class="grid grid-cols-2 gap-2">
+        <button id="edit-btn" class="btn text-[11px]">Edit</button>
+        <button id="refine-btn" class="btn text-[11px]">Refine with AI</button>
+      </div>
+      <pre id="dryout" class="text-[10px] hidden whitespace-pre-wrap" style="background:rgba(0,0,0,0.55);padding:10px;border-radius:6px;color:rgba(255,232,199,0.75);max-height:180px;overflow-y:auto;border:1px solid rgba(182,128,57,0.18);"></pre>
     `;
     actions.querySelector<HTMLButtonElement>("#claude")!.onclick = () => downloadClaudeSkill(skill);
     actions.querySelector<HTMLButtonElement>("#dl")!.onclick = () => downloadMd(skill);
     actions.querySelector<HTMLButtonElement>("#cp")!.onclick = async () => {
       await navigator.clipboard.writeText(skill.body_md);
-      actions.querySelector<HTMLButtonElement>("#cp")!.textContent = "Copied";
+      const b = actions.querySelector<HTMLButtonElement>("#cp")!;
+      b.textContent = "Copied";
+      setTimeout(() => { b.textContent = "Copy"; }, 1500);
     };
-    actions.querySelector<HTMLButtonElement>("#rg")!.onclick = () => {
-      const extra = prompt("Optional: extra guidance for regeneration", "");
-      generate(rec.id, d, extra ?? undefined);
+    actions.querySelector<HTMLButtonElement>("#edit-btn")!.onclick = (e) => {
+      toggleEditor(d, skill, e.currentTarget as HTMLButtonElement);
     };
+    actions.querySelector<HTMLButtonElement>("#refine-btn")!.onclick = () => toggleRefinePanel(d, rec, skill, allSkills);
     actions.querySelector<HTMLButtonElement>("#dryrun")!.onclick = () => void runDryRun(skill, actions);
   }
   d.appendChild(actions);
 
-  // One-line install hint so the user knows where the zip goes.
+  // Install hint
   const slug = (skill.body_md.match(/^name:\s*(.+)$/m)?.[1] ?? "skill").trim();
   const hint = document.createElement("div");
   hint.className = "glass p-3 mb-3";
   hint.innerHTML = `
-    <div class="label mb-1.5" style="font-size:9px;">Install</div>
-    <div class="text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.65);">Extract the zip into <code style="font-family:'JetBrains Mono',monospace;font-size:10px;background:rgba(182,128,57,0.15);padding:1px 5px;border-radius:3px;color:#E4AF7A;">~/.claude/skills/</code> — Claude Code will pick up <span style="color:#E4AF7A;font-weight:500;">${escapeHtml(slug)}</span> on next session.</div>
+    <div class="label mb-1" style="font-size:8px;">Install</div>
+    <div class="text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.55);">
+      Extract zip into <code style="font-family:monospace;font-size:10px;background:rgba(182,128,57,0.13);padding:1px 5px;border-radius:3px;color:#E4AF7A;">~/.claude/skills/</code>
+      — Claude Code picks up <span style="color:#E4AF7A;font-weight:600;">${escapeHtml(slug)}</span> on next session.
+    </div>
   `;
   d.appendChild(hint);
 
-  // Split YAML frontmatter from the markdown body so marked() doesn't mangle
-  // the `---\nname: ...\n---` block into a horizontal-rule + heading. We
-  // render the frontmatter as a small metadata strip above the prose.
-  // Also strip any `![](step_N.png)` placeholders the model may have added
-  // despite the system prompt — those resolve to non-existent paths inside
-  // the chrome-extension:// origin and would 404.
+  // Frontmatter + body
   const { frontmatter, body } = splitFrontmatter(stripImageRefs(skill.body_md));
   if (frontmatter) {
     const fm = document.createElement("div");
-    // whitespace-pre-wrap preserves newlines but lets long lines wrap inside
-    // the 380px popup column. break-words handles long URL-like values too.
     fm.className = "glass p-3 mb-3 text-[11px] leading-relaxed whitespace-pre-wrap break-words";
     fm.style.fontFamily = "'JetBrains Mono', monospace";
-    fm.style.color = "rgba(255, 232, 199, 0.55)";
+    fm.style.color = "rgba(255,232,199,0.48)";
     fm.textContent = frontmatter;
     d.appendChild(fm);
   }
@@ -985,31 +1225,140 @@ function skillView(rec: RecordingRow, skill: SkillRow | null, allSkills: SkillRo
   md.className = "skill-md text-primary";
   md.innerHTML = marked.parse(body, { async: false }) as string;
   d.appendChild(md);
+
   return d;
 }
 
-// Strip the leading YAML frontmatter (a `---` ... `---` block) and return the
-// raw frontmatter text + the remaining body. If no frontmatter is present,
-// returns an empty frontmatter string and the original input as body.
+// ---- Inline skill editor ----
+
+function toggleEditor(container: HTMLElement, skill: SkillRow, toggleBtn: HTMLButtonElement): void {
+  const existing = container.querySelector<HTMLDivElement>("#skill-editor-panel");
+  if (existing) {
+    existing.remove();
+    toggleBtn.textContent = "Edit";
+    return;
+  }
+  toggleBtn.textContent = "Close editor";
+
+  const panel = document.createElement("div");
+  panel.id = "skill-editor-panel";
+  panel.className = "glass p-3 mb-3 animate-slide-up";
+  panel.innerHTML = `
+    <div class="label mb-2" style="font-size:8px;">Edit skill — raw markdown</div>
+    <textarea id="skill-editor-ta" class="skill-editor-textarea"></textarea>
+    <div class="flex gap-2 mt-2">
+      <button id="editor-save" class="btn btn-primary flex-1 text-[12px]">Save</button>
+      <button id="editor-cancel" class="btn flex-1 text-[12px]">Cancel</button>
+    </div>
+    <p id="editor-status" class="text-[10px] mt-1.5" style="color:rgba(255,232,199,0.45);min-height:14px;"></p>
+  `;
+
+  const ta     = panel.querySelector<HTMLTextAreaElement>("#skill-editor-ta")!;
+  const status = panel.querySelector<HTMLParagraphElement>("#editor-status")!;
+  ta.value = skill.body_md;
+
+  panel.querySelector<HTMLButtonElement>("#editor-cancel")!.onclick = () => {
+    panel.remove();
+    toggleBtn.textContent = "Edit";
+  };
+
+  panel.querySelector<HTMLButtonElement>("#editor-save")!.onclick = async () => {
+    const saveBtn = panel.querySelector<HTMLButtonElement>("#editor-save")!;
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Saving…";
+    status.textContent = "";
+    try {
+      const db = getDataSupabase();
+      const newBody = ta.value;
+      const { error } = await db.from("skills").update({ body_md: newBody }).eq("id", skill.id);
+      if (error) throw new Error(error.message);
+      skill.body_md = newBody;
+      status.textContent = "Saved.";
+      status.style.color = "#4ADE80";
+      const mdEl = container.querySelector<HTMLElement>("article.skill-md");
+      if (mdEl) {
+        const { body } = splitFrontmatter(stripImageRefs(newBody));
+        mdEl.innerHTML = marked.parse(body, { async: false }) as string;
+      }
+      setTimeout(() => { panel.remove(); toggleBtn.textContent = "Edit"; }, 800);
+    } catch (e) {
+      status.textContent = `Error: ${(e as Error).message}`;
+      status.style.color = "#F87171";
+      saveBtn.disabled = false;
+      saveBtn.textContent = "Save";
+    }
+  };
+
+  const article = container.querySelector("article.skill-md");
+  if (article) container.insertBefore(panel, article);
+  else container.appendChild(panel);
+  setTimeout(() => ta.focus(), 40);
+}
+
+// ---- AI refinement panel ----
+
+function toggleRefinePanel(container: HTMLElement, rec: RecordingRow, skill: SkillRow, _allSkills: SkillRow[]): void {
+  const existing = container.querySelector<HTMLDivElement>("#refine-panel");
+  if (existing) { existing.remove(); return; }
+
+  const panel = document.createElement("div");
+  panel.id = "refine-panel";
+  panel.className = "glass p-3 mb-3 animate-slide-up";
+  panel.innerHTML = `
+    <div class="label mb-2" style="font-size:8px;">Refine with AI</div>
+    <p class="text-[11px] mb-2 leading-relaxed" style="color:rgba(255,232,199,0.55);">Describe what to change. A new version will be generated.</p>
+    <textarea id="refine-ta" class="input text-[12px]" rows="3"
+      placeholder="e.g. Add more detail to the Faster path. The API endpoint is POST /api/v2/leads."></textarea>
+    <div class="flex gap-2 mt-2">
+      <button id="refine-go" class="btn btn-primary flex-1 text-[12px]">Regenerate</button>
+      <button id="refine-cancel" class="btn flex-1 text-[12px]">Cancel</button>
+    </div>
+  `;
+
+  const ta = panel.querySelector<HTMLTextAreaElement>("#refine-ta")!;
+  panel.querySelector<HTMLButtonElement>("#refine-cancel")!.onclick = () => panel.remove();
+  panel.querySelector<HTMLButtonElement>("#refine-go")!.onclick = () => {
+    const instruction = ta.value.trim();
+    if (!instruction) return;
+    panel.remove();
+    const refinementExtra = `[REFINEMENT REQUEST — existing skill below for reference]\n${skill.body_md}\n\n[REQUESTED CHANGES]\n${instruction}`;
+    view = { kind: "processing", recording: rec, stage: "uploading" };
+    render();
+    void runAutoGenerate(rec, refinementExtra);
+  };
+  ta.onkeydown = (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { panel.querySelector<HTMLButtonElement>("#refine-go")!.click(); } };
+
+  const article = container.querySelector("article.skill-md");
+  if (article) container.insertBefore(panel, article);
+  else container.appendChild(panel);
+  setTimeout(() => ta.focus(), 40);
+}
+
+// ---- Utilities ----
+
+function statusColor(s: string): string {
+  if (s === "ready")                               return "status-ready";
+  if (s === "failed")                              return "status-failed";
+  if (s === "transcribing" || s === "uploading")   return "status-progress";
+  return "status-idle";
+}
+
 function splitFrontmatter(md: string): { frontmatter: string; body: string } {
   const m = md.match(/^---\n([\s\S]*?)\n---\n?/);
   if (!m) return { frontmatter: "", body: md };
   return { frontmatter: m[1].trim(), body: md.slice(m[0].length) };
 }
 
-// Remove `![alt](path)` markdown image references from the body. The Edge
-// Function's system prompt asks Claude not to emit these, but it sometimes
-// does — and there's no real image to load in the popup anyway.
 function stripImageRefs(md: string): string {
   return md.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/[ \t]+\n/g, "\n");
 }
 
 async function generate(recordingId: string, container: HTMLElement, extra?: string): Promise<void> {
   const status = container.querySelector<HTMLDivElement>("#genstatus") ?? container;
-  status.textContent = "Generating skill… this can take 30–60s.";
+  status.textContent = "Generating… 30–60s.";
   try {
     const auth = getAuthSupabase();
-    const db = getDataSupabase();
+    const db   = getDataSupabase();
     const { data: sess } = await auth.auth.getSession();
     const res = await fetch(functionUrl("generate-skill"), {
       method: "POST",
@@ -1021,7 +1370,6 @@ async function generate(recordingId: string, container: HTMLElement, extra?: str
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
     const skill = (await res.json()) as SkillRow;
-    // Refresh: load recording + skill into view.
     const { data: rec } = await db.from("recordings").select("*").eq("id", recordingId).single();
     view = { kind: "skill", recording: rec as RecordingRow, skill };
     render();
@@ -1030,9 +1378,6 @@ async function generate(recordingId: string, container: HTMLElement, extra?: str
   }
 }
 
-// Send the skill to scout-runtime in dry-run mode. Returns the planner's
-// JSON plan without executing — useful for sanity-checking what the agent
-// will actually do before any HTTP side-effects happen.
 async function runDryRun(skill: SkillRow, container: HTMLElement): Promise<void> {
   const out = container.querySelector<HTMLPreElement>("#dryout")!;
   const btn = container.querySelector<HTMLButtonElement>("#dryrun")!;
@@ -1051,7 +1396,7 @@ async function runDryRun(skill: SkillRow, container: HTMLElement): Promise<void>
   const inputsRaw = prompt("Inputs JSON (or leave blank):", "{}");
   let inputs: Record<string, unknown> = {};
   try { inputs = inputsRaw ? JSON.parse(inputsRaw) : {}; }
-  catch { out.textContent = "Invalid JSON inputs."; btn.disabled = false; btn.textContent = "⚙ Test in cloud (dry-run)"; return; }
+  catch { out.textContent = "Invalid JSON inputs."; btn.disabled = false; btn.textContent = "Test in cloud (dry-run)"; return; }
   try {
     const res = await fetch(`${url}/api/run`, {
       method: "POST",
@@ -1064,13 +1409,10 @@ async function runDryRun(skill: SkillRow, container: HTMLElement): Promise<void>
     out.textContent = `Error: ${(e as Error).message}`;
   } finally {
     btn.disabled = false;
-    btn.textContent = "⚙ Test in cloud (dry-run)";
+    btn.textContent = "Test in cloud (dry-run)";
   }
 }
 
-// Format an improvement brief as a clean prompt for Claude Code. The body
-// already follows our IMPROVEMENT_SYSTEM template; we just add a short
-// preamble that tells Claude Code to act on it.
 function formatBriefForClaudeCode(skill: SkillRow, _rec: RecordingRow): string {
   return `You are about to make a change to my app based on a critique I recorded while using it. The brief below was generated from a Scout recording — clicks, screenshots, and narration. Read it, ask if anything is unclear, then make the change.
 
@@ -1085,23 +1427,16 @@ When you're done, summarise the file(s) you changed and any decisions you made.`
 
 function downloadMd(skill: SkillRow): void {
   const blob = new Blob([skill.body_md], { type: "text/markdown" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${skill.title || "skill"}.md`;
-  a.click();
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url; a.download = `${skill.title || "skill"}.md`; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-// Build a zip with the structure Claude Code expects:
-//   <slug>/SKILL.md
-//   <slug>/README.txt   (one-line note about where this came from)
-// User extracts the zip into ~/.claude/skills/ and the skill is available
-// in their next Claude Code session.
 function downloadClaudeSkill(skill: SkillRow): void {
-  const slug = (skill.body_md.match(/^name:\s*(.+)$/m)?.[1] ?? "scout-skill").trim();
+  const slug     = (skill.body_md.match(/^name:\s*(.+)$/m)?.[1] ?? "scout-skill").trim();
   const safeSlug = slug.replace(/[^a-zA-Z0-9_-]/g, "-");
-  const readme = [
+  const readme   = [
     `Generated by Scout — ${new Date().toISOString().slice(0, 10)}`,
     `Recording title: ${skill.title ?? "(untitled)"}`,
     ``,
@@ -1111,16 +1446,14 @@ function downloadClaudeSkill(skill: SkillRow): void {
     `  3. Claude will discover this skill via its frontmatter`,
     ``,
   ].join("\n");
-  const zip = zipSync({
-    [`${safeSlug}/SKILL.md`]: strToU8(skill.body_md),
+  const zip  = zipSync({
+    [`${safeSlug}/SKILL.md`]:   strToU8(skill.body_md),
     [`${safeSlug}/README.txt`]: strToU8(readme),
   });
   const blob = new Blob([zip as BlobPart], { type: "application/zip" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${safeSlug}.zip`;
-  a.click();
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url; a.download = `${safeSlug}.zip`; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
@@ -1128,67 +1461,6 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
-// ---- Boot ----
-
-void init();
-
-// Re-render if auth state flips (e.g. magic link click in another tab).
-let authClient: ReturnType<typeof getAuthSupabase> | null = null;
-try {
-  authClient = getAuthSupabase();
-  getDataSupabase();
-} catch { /* unconfigured build — auth state changes are a no-op */ }
-authClient?.auth.onAuthStateChange((_evt, sess) => {
-  if (!sess && view.kind !== "signed_out") {
-    view = { kind: "signed_out", mode: "signin" };
-    render();
-  } else if (sess && (view.kind === "signed_out" || view.kind === "loading")) {
-    // signInWithPassword / signUp success lands here.
-    view = { kind: "idle", tab: "record" };
-    render();
-  }
-});
-
-// Listen for live updates pushed by the service worker so the popup never
-// shows a stale view (recording status, audio availability, etc).
-chrome.runtime.onMessage.addListener((msg: RuntimeMessage) => {
-  if (msg.type === "popup:state") {
-    // Audio support or pause state changed mid-recording. Only refresh if
-    // we're actually showing the recording view for that session.
-    if (view.kind === "recording" && msg.state && msg.state.recording_id === view.state.recording_id) {
-      view = { kind: "recording", state: msg.state };
-      render();
-    }
-    return;
-  }
-  if (msg.type === "popup:counts") {
-    // Update counters in place without a full re-render so the timer doesn't
-    // reset every time an event lands.
-    if (view.kind === "recording") {
-      view.state.event_count = msg.event_count;
-      view.state.shot_count = msg.shot_count;
-      const el = document.getElementById("evcount");
-      if (el) el.textContent = `${msg.event_count} events · ${msg.shot_count} screenshots`;
-    }
-    return;
-  }
-  if (msg.type === "popup:recording_changed") {
-    // Skill view of the affected recording — pull a fresh row so status,
-    // duration, and any newly-attached skill all reflect reality.
-    if (view.kind === "skill" && view.recording.id === msg.recording_id) {
-      void refreshSkillView(msg.recording_id);
-      return;
-    }
-    // Library tab — re-render to pull fresh statuses.
-    if (view.kind === "idle" && view.tab === "library") {
-      render();
-    }
-  }
-});
-
-// Lazy refetch of a full skill row when the library handed us a metadata-
-// only stub. Updates the view in place so the user never sees an empty
-// brief / skill view because of a thin SELECT.
 async function hydrateSkill(skillId: string): Promise<void> {
   if (view.kind !== "skill") return;
   const db = getDataSupabase();
@@ -1213,3 +1485,53 @@ async function refreshSkillView(recordingId: string): Promise<void> {
   view = { kind: "skill", recording: rec as RecordingRow, skill: sorted[0] ?? null, allSkills: sorted };
   render();
 }
+
+// ---- Boot ----
+
+void init();
+
+let authClient: ReturnType<typeof getAuthSupabase> | null = null;
+try {
+  authClient = getAuthSupabase();
+  getDataSupabase();
+} catch { /* unconfigured build */ }
+
+authClient?.auth.onAuthStateChange((_evt, sess) => {
+  if (!sess && view.kind !== "signed_out") {
+    view = { kind: "signed_out", mode: "signin" };
+    render();
+  } else if (sess && (view.kind === "signed_out" || view.kind === "loading")) {
+    view = { kind: "idle", tab: "record" };
+    render();
+  }
+});
+
+chrome.runtime.onMessage.addListener((msg: RuntimeMessage) => {
+  if (msg.type === "popup:state") {
+    if (view.kind === "recording" && msg.state && msg.state.recording_id === view.state.recording_id) {
+      view = { kind: "recording", state: msg.state };
+      render();
+    }
+    return;
+  }
+  if (msg.type === "popup:counts") {
+    if (view.kind === "recording") {
+      view.state.event_count = msg.event_count;
+      view.state.shot_count  = msg.shot_count;
+      const evEl  = document.getElementById("evcount");
+      const shEl  = document.getElementById("shotcount");
+      if (evEl) evEl.textContent  = `${msg.event_count} events`;
+      if (shEl) shEl.textContent  = `${msg.shot_count} screenshots`;
+    }
+    return;
+  }
+  if (msg.type === "popup:recording_changed") {
+    if (view.kind === "skill" && view.recording.id === msg.recording_id) {
+      void refreshSkillView(msg.recording_id);
+      return;
+    }
+    if (view.kind === "idle" && view.tab === "library") {
+      render();
+    }
+  }
+});

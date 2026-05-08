@@ -302,6 +302,27 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 // ---- Event ingestion ----
 
+// Auto-title: on the first navigation event, save the page title so the
+// library shows a real name immediately (before skill generation backfills it).
+const autoTitledRecordings = new Set<string>();
+
+async function maybeAutoTitle(state: RecordingSessionState, ev: CapturedEvent): Promise<void> {
+  if (ev.kind !== "navigation") return;
+  if (autoTitledRecordings.has(state.recording_id)) return;
+  autoTitledRecordings.add(state.recording_id);
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const rawTitle = (tab?.title ?? "").trim();
+    if (!rawTitle || rawTitle === "New Tab") return;
+    // Shorten to 80 chars, strip " - Chrome" / " | Company" suffixes
+    const title = rawTitle.replace(/\s*[-|]\s*(?:Google Chrome|Mozilla Firefox|Safari|Edge)$/i, "").trim().slice(0, 80);
+    if (title) {
+      const db = getDataSupabase();
+      await db.from("recordings").update({ title }).eq("id", state.recording_id);
+    }
+  } catch { /* non-fatal */ }
+}
+
 async function onContentEvent(ev: CapturedEvent, sender: chrome.runtime.MessageSender): Promise<void> {
   const state = await loadSession();
   if (!state || state.is_paused) return;
@@ -309,6 +330,9 @@ async function onContentEvent(ev: CapturedEvent, sender: chrome.runtime.MessageS
   ev.recording_id = state.recording_id;
   ev.user_id = state.user_id;
   ev.ts_ms = Date.now() - state.started_at - state.paused_ms;
+
+  // Auto-title from first navigation
+  void maybeAutoTitle(state, ev);
 
   // Capture a screenshot of the active tab. Some pages (chrome://, pdf viewer)
   // refuse — we degrade gracefully. Chrome also rate-limits captureVisibleTab

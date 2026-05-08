@@ -1,7 +1,7 @@
 // /generate-skill — fetch events + transcript + sampled screenshots, ask Claude
 // to produce a SKILL.md, persist it. Per §10.
 
-import { callLLM } from "../_shared/llm.ts";
+import { callLLM, callLLMStream } from "../_shared/llm.ts";
 
 // Tier → model + image strategy. Defaults to Standard. Tier comes from
 // recording.meta.tier (set by the popup when the recording starts).
@@ -291,92 +291,98 @@ SCREENSHOTS: {{IMAGE_COUNT}} attached as image blocks below.`;
       return c;
     };
 
-    // Always run BOTH prompts in parallel. Every recording yields a SKILL.md
-    // AND a CHANGE BRIEF — the user picks which to look at later. The mode
-    // hint on the recording is preserved as a "primary intent" signal but
-    // doesn't gate which artifact gets produced.
-    // deno-lint-ignore no-explicit-any
-    const skillCall = callLLM({
-      model: cfg.model,
-      max_tokens: cfg.max_tokens,
-      system: SYSTEM,
-      temperature: 0.4,
-      messages: [{ role: "user", content: buildContent("Now produce the SKILL.md from these materials.", imagesForSkill) as any }],
-    });
-    // deno-lint-ignore no-explicit-any
-    const improvementCall = callLLM({
-      model: cfg.model,
-      max_tokens: cfg.max_tokens,
-      system: IMPROVEMENT_SYSTEM,
-      temperature: 0.4,
-      messages: [{ role: "user", content: buildContent("Now produce the CHANGE BRIEF from these materials.", imagesForImprovement) as any }],
-    });
-    const [skillMd, improvementMd] = await Promise.all([skillCall, improvementCall]);
+    // Stream the skill and run improvement concurrently.
+    // The popup receives SSE events: skill_chunk (live text), done (full rows).
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    const enc = new TextEncoder();
 
-    const skillSlug = (skillMd.match(/^name:\s*(.+)$/m)?.[1] ?? "skill").trim();
-    const skillTitle = (skillMd.match(/^#\s+(.+)$/m)?.[1] ?? skillSlug).trim();
-    const improvementTitle = (improvementMd.match(/^#\s+(.+)$/m)?.[1] ?? "Improvement brief").trim();
+    const send = async (data: unknown): Promise<void> => {
+      try {
+        await writer.write(enc.encode(`data: ${JSON.stringify(data)}\n\n`));
+      } catch { /* client disconnected */ }
+    };
 
-    // Each kind gets its own version sequence so v1 of skill and v1 of
-    // improvement are independent. Lookup the max(version) per kind.
-    const { data: existingSkill } = await admin
-      .from("skills")
-      .select("version")
-      .eq("recording_id", recording_id)
-      .eq("kind", "skill")
-      .order("version", { ascending: false })
-      .limit(1);
-    const { data: existingImprovement } = await admin
-      .from("skills")
-      .select("version")
-      .eq("recording_id", recording_id)
-      .eq("kind", "improvement")
-      .order("version", { ascending: false })
-      .limit(1);
-    const skillVersion = ((existingSkill?.[0]?.version as number | undefined) ?? 0) + 1;
-    const improvementVersion = ((existingImprovement?.[0]?.version as number | undefined) ?? 0) + 1;
+    // Run the full generation pipeline in the background so we can return
+    // the streaming response immediately.
+    (async () => {
+      try {
+        // Start improvement immediately (non-streaming) so it runs in parallel
+        // while skill content streams to the client.
+        // deno-lint-ignore no-explicit-any
+        const improvementPromise = callLLM({
+          model: cfg.model,
+          max_tokens: cfg.max_tokens,
+          system: IMPROVEMENT_SYSTEM,
+          temperature: 0.4,
+          messages: [{ role: "user", content: buildContent("Now produce the CHANGE BRIEF from these materials.", imagesForImprovement) as any }],
+        });
 
-    const inserts = [
-      {
-        recording_id,
-        user_id: user.id,
-        version: skillVersion,
-        title: skillTitle,
-        body_md: skillMd,
-        kind: "skill" as const,
-        prompt_used: SYSTEM,
+        // Stream skill content chunk by chunk to the popup.
+        let skillMd = "";
+        // deno-lint-ignore no-explicit-any
+        const skillStream = callLLMStream({
+          model: cfg.model,
+          max_tokens: cfg.max_tokens,
+          system: SYSTEM,
+          temperature: 0.4,
+          messages: [{ role: "user", content: buildContent("Now produce the SKILL.md from these materials.", imagesForSkill) as any }],
+        });
+        for await (const chunk of skillStream) {
+          skillMd += chunk;
+          await send({ type: "skill_chunk", text: chunk });
+        }
+
+        // By the time skill streaming finishes, improvement is likely done.
+        const improvementMd = await improvementPromise;
+
+        const skillSlug  = (skillMd.match(/^name:\s*(.+)$/m)?.[1] ?? "skill").trim();
+        const skillTitle = (skillMd.match(/^#\s+(.+)$/m)?.[1] ?? skillSlug).trim();
+        const improvementTitle = (improvementMd.match(/^#\s+(.+)$/m)?.[1] ?? "Improvement brief").trim();
+
+        const { data: existingSkill } = await admin
+          .from("skills").select("version")
+          .eq("recording_id", recording_id).eq("kind", "skill")
+          .order("version", { ascending: false }).limit(1);
+        const { data: existingImprovement } = await admin
+          .from("skills").select("version")
+          .eq("recording_id", recording_id).eq("kind", "improvement")
+          .order("version", { ascending: false }).limit(1);
+        const skillVersion       = ((existingSkill?.[0]?.version as number | undefined) ?? 0) + 1;
+        const improvementVersion = ((existingImprovement?.[0]?.version as number | undefined) ?? 0) + 1;
+
+        const inserts = [
+          { recording_id, user_id: user.id, version: skillVersion,       title: skillTitle,       body_md: skillMd,       kind: "skill"       as const, prompt_used: SYSTEM },
+          { recording_id, user_id: user.id, version: improvementVersion, title: improvementTitle, body_md: improvementMd, kind: "improvement" as const, prompt_used: IMPROVEMENT_SYSTEM },
+        ];
+        const { data: inserted, error: insErr } = await admin.from("skills").insert(inserts).select("*");
+        if (insErr) { await send({ type: "error", message: insErr.message }); return; }
+
+        const primary = (inserted ?? []).find((r: { kind?: string }) =>
+          rec.mode === "improvement" ? r.kind === "improvement" : r.kind === "skill"
+        ) ?? (inserted ?? [])[0];
+
+        if (!rec.title && primary?.title) {
+          await admin.from("recordings").update({ title: primary.title }).eq("id", recording_id);
+        }
+
+        await send({ type: "done", ...primary, all: inserted });
+      } catch (err) {
+        console.error("[generate-skill]", err);
+        await send({ type: "error", message: String((err as Error).message) });
+      } finally {
+        await writer.close();
+      }
+    })();
+
+    return new Response(readable, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        ...corsHeaders(),
       },
-      {
-        recording_id,
-        user_id: user.id,
-        version: improvementVersion,
-        title: improvementTitle,
-        body_md: improvementMd,
-        kind: "improvement" as const,
-        prompt_used: IMPROVEMENT_SYSTEM,
-      },
-    ];
-
-    const { data: inserted, error: insErr } = await admin
-      .from("skills")
-      .insert(inserts)
-      .select("*");
-    if (insErr) return json({ error: insErr.message }, 500);
-
-    // Pick the row that matches the recording's primary intent as the
-    // "default" return — the popup shows that one first. Both are listed
-    // in `all`.
-    const primary = (inserted ?? []).find((r: { kind?: string }) =>
-      rec.mode === "improvement" ? r.kind === "improvement" : r.kind === "skill"
-    ) ?? (inserted ?? [])[0];
-
-    // Backfill the recording row's title if it's still null. Use the
-    // primary artifact's title.
-    if (!rec.title && primary?.title) {
-      await admin.from("recordings").update({ title: primary.title }).eq("id", recording_id);
-    }
-
-    return json({ ...primary, all: inserted });
+    });
   } catch (err) {
     console.error("[generate-skill]", err);
     return json({ error: String((err as Error).message) }, 500);
