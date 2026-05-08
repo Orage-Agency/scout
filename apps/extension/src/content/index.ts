@@ -112,6 +112,29 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     { capture: true, passive: true }
   );
 
+  // Form field blur — capture the filled value when user leaves a text input.
+  // This gives the skill generator concrete variable examples for typed values.
+  document.addEventListener(
+    "blur",
+    (e) => {
+      const t = e.target as HTMLInputElement | HTMLTextAreaElement | null;
+      if (!t || isOurOwnUi(t)) return;
+      const tag = t.tagName.toLowerCase();
+      if (tag !== "input" && tag !== "textarea") return;
+      if (isPasswordField(t)) return;
+      const inp = t as HTMLInputElement;
+      // Skip non-text-like input types and fields the user left empty.
+      const skip = ["submit", "button", "reset", "file", "image", "range", "color", "checkbox", "radio", "hidden"];
+      if (skip.includes(inp.type ?? "")) return;
+      const value = inp.value?.trim();
+      if (!value) return; // nothing was filled in
+      const snippet = redactString(value.slice(0, 120));
+      if (!snippet) return;
+      post("form_fill", { value: snippet, field: buildSelector(t) });
+    },
+    { capture: true, passive: true }
+  );
+
   // Scroll, debounced.
   let scrollTimer: number | null = null;
   let scrollY0 = window.scrollY;

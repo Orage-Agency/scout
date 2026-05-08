@@ -59,6 +59,10 @@ function summarizeCoachEvents(
       lines.push(`${t} select: "${e.data.selected_text}"`);
     } else if (e.kind === "checkbox_change") {
       lines.push(`${t} ${e.data.checked ? "checked" : "unchecked"}: ${e.data.value ?? ""}`);
+    } else if (e.kind === "form_fill") {
+      const label = (e.data.field as { visibleText?: string; selector?: string } | undefined)?.visibleText
+        ?? (e.data.field as { selector?: string } | undefined)?.selector ?? "field";
+      lines.push(`${t} fill "${label}" = "${String(e.data.value ?? "").slice(0, 60)}"`);
     } else {
       lines.push(`${t} ${e.kind}`);
     }

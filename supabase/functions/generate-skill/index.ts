@@ -499,6 +499,12 @@ function summarizeEvents(events: Array<{ ts_ms: number; kind: string; data: Reco
     } else if (e.kind === "checkbox_change") {
       const d = e.data as Record<string, unknown>;
       lines.push(`${ts} ${d.checked ? "checked" : "unchecked"} ${(d.target as { visibleText?: string } | undefined)?.visibleText ?? String(d.value ?? "")}`);
+    } else if (e.kind === "form_fill") {
+      flushTyping();
+      const d = e.data as Record<string, unknown>;
+      const label = (d.field as { selector?: string; visibleText?: string } | undefined)?.visibleText
+        ?? (d.field as { selector?: string } | undefined)?.selector ?? "field";
+      lines.push(`${ts} fill "${label}" = "${String(d.value ?? "").slice(0, 60)}"`);
     } else {
       flushTyping();
       lines.push(`${ts} ${e.kind}`);

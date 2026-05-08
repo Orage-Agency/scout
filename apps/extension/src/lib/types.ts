@@ -11,6 +11,7 @@ export type EventKind =
   | "focus_change"
   | "select_change"
   | "checkbox_change"
+  | "form_fill"
   | "tab_closed"
   | "screenshot_failed"
   | "coach_reply";
