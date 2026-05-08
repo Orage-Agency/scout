@@ -542,12 +542,13 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
       const bar = ensureControlBar();
       ensureRecordingFrame();
       startBarObserver();
-      // Ask the worker for the start time and mic state.
+      // Ask the worker for the start time, paused time, and mic state.
       chrome.runtime.sendMessage({ type: "popup:get_state" } satisfies RuntimeMessage, (resp) => {
         const state = resp?.state;
         if (!state) return;
         bar.setAttribute("data-started", String(state.started_at));
-        // Show mic indicator when mic is enabled and not denied by browser.
+        bar.setAttribute("data-paused-ms", String(state.paused_ms ?? 0));
+        if (state.is_paused) bar.setAttribute("data-paused", "true");
         const micEl = bar.querySelector<HTMLElement>("[data-scout-mic]");
         if (micEl) {
           const micActive = (state.mic_enabled ?? true) && (state.audio_supported ?? true);
@@ -575,6 +576,8 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
       const bar = ensureControlBar();
       ensureRecordingFrame();
       bar.setAttribute("data-started", String(state.started_at));
+      bar.setAttribute("data-paused-ms", String(state.paused_ms ?? 0));
+      if (state.is_paused) bar.setAttribute("data-paused", "true");
       startBarObserver();
       const micEl = bar.querySelector<HTMLElement>("[data-scout-mic]");
       if (micEl) {
