@@ -437,7 +437,10 @@ async function captureTabAndQueue(
   await bumpCounters(ev);
 }
 
-function describeEvent(ev: CapturedEvent): string {
+// Returns a human-readable description for the live capture feed.
+// Returns null for noisy events (scroll, focus_change, etc.) that
+// clutter the feed without adding signal.
+function describeEvent(ev: CapturedEvent): string | null {
   const d = ev.data ?? {};
   switch (ev.kind) {
     case "click": {
@@ -449,7 +452,9 @@ function describeEvent(ev: CapturedEvent): string {
     case "navigation": {
       try { return `Navigated to ${new URL(String(d.to_url ?? "")).hostname}`; } catch { return "Navigation"; }
     }
-    case "tab_switch": return `Switched tab`;
+    case "tab_switch": {
+      try { return `Tab: ${new URL(String(d.to_tab_url ?? "")).hostname}`; } catch { return "Switched tab"; }
+    }
     case "select_change": return `Selected: ${String(d.selected_text ?? "").slice(0, 30)}`;
     case "checkbox_change": return `${d.checked ? "Checked" : "Unchecked"}: ${String(d.value ?? "").slice(0, 30)}`;
     case "form_fill": {
@@ -457,7 +462,14 @@ function describeEvent(ev: CapturedEvent): string {
       return `Filled: ${f?.visibleText || f?.selector || "field"}`;
     }
     case "coach_reply": return `Replied to coach`;
-    default: return ev.kind.replace(/_/g, " ");
+    // Noisy / low-signal — skip from live feed
+    case "scroll":
+    case "focus_change":
+    case "keydown":
+    case "screenshot_failed":
+    case "tab_closed":
+      return null;
+    default: return null;
   }
 }
 
@@ -475,7 +487,7 @@ async function bumpCounters(ev: CapturedEvent): Promise<void> {
       type: "popup:counts",
       event_count: s.event_count,
       shot_count: s.shot_count,
-      last_event_desc: describeEvent(ev),
+      last_event_desc: describeEvent(ev) ?? undefined,
     } satisfies RuntimeMessage)
     .catch(() => {});
   // Push live count to the active tab's floating bar.
