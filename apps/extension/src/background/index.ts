@@ -448,7 +448,10 @@ function describeEvent(ev: CapturedEvent): string | null {
       return `Clicked: ${t?.visibleText || t?.selector || "element"}`;
     }
     case "paste":  return `Pasted into form`;
-    case "copy":   return `Copied text`;
+    case "copy": {
+      const snippet = String(d.content_snippet ?? "").trim().slice(0, 40);
+      return snippet ? `Copied: "${snippet}"` : "Copied text";
+    }
     case "navigation": {
       try { return `Navigated to ${new URL(String(d.to_url ?? "")).hostname}`; } catch { return "Navigation"; }
     }

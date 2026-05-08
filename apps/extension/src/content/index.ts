@@ -72,8 +72,10 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     (e) => {
       const target = e.target as Element | null;
       if (!target || isOurOwnUi(target)) return;
-      const text = e.clipboardData?.getData("text") ?? "";
-      post("copy", { content_length: text.length, source: buildSelector(target) });
+      // Prefer the live selection text; clipboard data may be empty on copy events.
+      const raw = window.getSelection()?.toString() ?? e.clipboardData?.getData("text") ?? "";
+      const snippet = raw ? redactString(raw.slice(0, 120)) : "";
+      post("copy", { content_length: raw.length, content_snippet: snippet, source: buildSelector(target) });
     },
     { capture: true, passive: true }
   );
@@ -113,24 +115,29 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
   );
 
   // Form field blur — capture the filled value when user leaves a text input.
-  // This gives the skill generator concrete variable examples for typed values.
+  // Also captures contenteditable divs (Notion, Gmail compose, rich-text editors).
   document.addEventListener(
     "blur",
     (e) => {
-      const t = e.target as HTMLInputElement | HTMLTextAreaElement | null;
+      const t = e.target as HTMLElement | null;
       if (!t || isOurOwnUi(t)) return;
       const tag = t.tagName.toLowerCase();
-      if (tag !== "input" && tag !== "textarea") return;
+      const isContentEditable = t.getAttribute("contenteditable") === "true" || t.getAttribute("contenteditable") === "";
+      if (tag !== "input" && tag !== "textarea" && !isContentEditable) return;
       if (isPasswordField(t)) return;
-      const inp = t as HTMLInputElement;
-      // Skip non-text-like input types and fields the user left empty.
-      const skip = ["submit", "button", "reset", "file", "image", "range", "color", "checkbox", "radio", "hidden"];
-      if (skip.includes(inp.type ?? "")) return;
-      const value = inp.value?.trim();
-      if (!value) return; // nothing was filled in
-      const snippet = redactString(value.slice(0, 120));
+      let raw: string;
+      if (isContentEditable) {
+        raw = (t.innerText ?? t.textContent ?? "").trim();
+      } else {
+        const inp = t as HTMLInputElement;
+        const skip = ["submit", "button", "reset", "file", "image", "range", "color", "checkbox", "radio", "hidden"];
+        if (skip.includes(inp.type ?? "")) return;
+        raw = inp.value?.trim() ?? "";
+      }
+      if (!raw || raw.length < 2) return;
+      const snippet = redactString(raw.slice(0, 120));
       if (!snippet) return;
-      post("form_fill", { value: snippet, field: buildSelector(t) });
+      post("form_fill", { value: snippet, field: buildSelector(t), is_contenteditable: isContentEditable });
     },
     { capture: true, passive: true }
   );
@@ -242,6 +249,18 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
       const isPaused = bar!.getAttribute("data-paused") === "true";
       const type = isPaused ? "popup:resume_recording" : "popup:pause_recording";
       await chrome.runtime.sendMessage({ type } satisfies RuntimeMessage).catch(() => {});
+      if (!isPaused) {
+        // Recording just paused — stash the timestamp
+        bar!.setAttribute("data-pause-started", String(Date.now()));
+      } else {
+        // Recording just resumed — accumulate elapsed pause time
+        const pauseStart = Number(bar!.getAttribute("data-pause-started") || "0");
+        if (pauseStart) {
+          const prev = Number(bar!.getAttribute("data-paused-ms") || "0");
+          bar!.setAttribute("data-paused-ms", String(prev + Date.now() - pauseStart));
+        }
+        bar!.removeAttribute("data-pause-started");
+      }
       bar!.setAttribute("data-paused", String(!isPaused));
       updatePauseVisual(!isPaused);
     });
@@ -249,11 +268,13 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
       await chrome.runtime.sendMessage({ type: "popup:stop_recording" } satisfies RuntimeMessage).catch(() => {});
     });
 
-    // Keep timer ticking from the recording start time we stash here.
+    // Keep timer ticking — subtracts accumulated paused time and freezes while paused.
     const tick = () => {
       const start = Number(bar!.getAttribute("data-started") || "0");
       if (!start) return;
-      const ms = Date.now() - start;
+      if (bar!.getAttribute("data-paused") === "true") return;
+      const pausedMs = Number(bar!.getAttribute("data-paused-ms") || "0");
+      const ms = Math.max(0, Date.now() - start - pausedMs);
       const s = Math.floor(ms / 1000) % 60;
       const m = Math.floor(ms / 60000);
       const t = bar!.querySelector("[data-scout-time]");
