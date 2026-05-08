@@ -515,6 +515,12 @@ function libraryTab(): HTMLElement {
   `;
   d.appendChild(searchWrap);
 
+  const statsBar = document.createElement("div");
+  statsBar.id = "lib-stats";
+  statsBar.className = "flex items-center justify-between mb-2";
+  statsBar.innerHTML = `<span class="text-[10px]" style="color:rgba(255,232,199,0.28);">Loading…</span>`;
+  d.appendChild(statsBar);
+
   const list = document.createElement("div");
   list.id = "list";
   list.className = "space-y-2 flex-1";
@@ -541,6 +547,11 @@ function libraryTab(): HTMLElement {
   loadLibraryData().then((data) => {
     if (!data) return;
     allRecordings = data;
+    const totalSkills = allRecordings.reduce((n, r) => n + (r.skills?.length ?? 0), 0);
+    statsBar.innerHTML = `
+      <span class="text-[10px]" style="color:rgba(255,232,199,0.28);">${allRecordings.length} recording${allRecordings.length !== 1 ? "s" : ""} · ${totalSkills} skill${totalSkills !== 1 ? "s" : ""}</span>
+      <span class="text-[9px]" style="color:rgba(182,128,57,0.48);font-family:'Bebas Neue',sans-serif;letter-spacing:0.15em;">LIBRARY</span>
+    `;
     renderCards(list, allRecordings);
   });
 
@@ -1366,10 +1377,17 @@ function skillView(
     d.appendChild(fm);
   }
 
+  const mdWrap = document.createElement("div");
+  mdWrap.className = "relative";
   const md = document.createElement("article");
   md.className = "skill-md text-primary";
   md.innerHTML = marked.parse(body, { async: false }) as string;
-  d.appendChild(md);
+  // Bottom fade to hint there's more content below
+  const fade = document.createElement("div");
+  fade.className = "skill-body-fade";
+  mdWrap.appendChild(md);
+  mdWrap.appendChild(fade);
+  d.appendChild(mdWrap);
 
   return d;
 }
