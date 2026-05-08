@@ -5,20 +5,24 @@ import type { SelectorDescriptor } from "./types";
 
 const AUTO_GEN_ID = /(^|[-_])(?:[0-9a-f]{8}|[0-9]{6,}|uuid|hash)/i;
 
+const BUTTON_LIKE_ROLES = new Set(["button", "menuitem", "option", "tab", "menuitemcheckbox", "menuitemradio", "link", "treeitem"]);
+
 export function buildSelector(el: Element): SelectorDescriptor {
   const tag = el.tagName.toLowerCase();
   const role = el.getAttribute("role");
   const visibleText = ((el as HTMLElement).innerText || el.textContent || "")
     .trim()
-    .slice(0, 80);
+    .replace(/\s+/g, " ")
+    .slice(0, 60);
 
   const rect = (el as HTMLElement).getBoundingClientRect?.();
   const bbox = rect
     ? { x: Math.round(rect.left), y: Math.round(rect.top), w: Math.round(rect.width), h: Math.round(rect.height) }
     : undefined;
 
-  // 1. data-testid
-  const testId = el.getAttribute("data-testid");
+  // 1. data-testid / data-test / data-cy / data-qa (stable test hooks)
+  const testId = el.getAttribute("data-testid") ?? el.getAttribute("data-test")
+    ?? el.getAttribute("data-cy") ?? el.getAttribute("data-qa");
   if (testId) {
     return { strategy: "data-testid", selector: `[data-testid="${cssEscape(testId)}"]`, tag, role, visibleText, bbox };
   }
@@ -41,8 +45,10 @@ export function buildSelector(el: Element): SelectorDescriptor {
     return { strategy: "name", selector: `${tag}[name="${cssEscape(name)}"]`, tag, role, visibleText, bbox };
   }
 
-  // 5. visible text + tag (most useful for buttons/links)
-  if (visibleText && /^(button|a|summary|label)$/i.test(tag) && visibleText.length <= 40) {
+  // 5. visible text — native interactive tags AND role-based interactive elements (SPAs)
+  const isInteractive = /^(button|a|summary|label|option)$/i.test(tag)
+    || (role != null && BUTTON_LIKE_ROLES.has(role));
+  if (visibleText && isInteractive && visibleText.length <= 50) {
     return { strategy: "text", selector: `${tag}:contains("${visibleText.replace(/"/g, '\\"')}")`, tag, role, visibleText, bbox };
   }
 
