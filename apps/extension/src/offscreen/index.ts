@@ -50,11 +50,17 @@ async function stop(): Promise<void> {
     } satisfies RuntimeMessage);
     return;
   }
+  // Release the mic FIRST so Chrome's recording indicator clears immediately
+  // and no further audio is captured. Stopping the tracks while the recorder
+  // is still active causes the recorder to fire its final 'dataavailable'
+  // event with the buffered audio, then 'stop' — same as calling
+  // recorder.stop() explicitly, but the user-visible "mic on" state ends now
+  // instead of after the recorder finalizes.
+  stream?.getTracks().forEach((t) => t.stop());
   await new Promise<void>((resolve) => {
     recorder!.onstop = () => resolve();
-    recorder!.stop();
+    if (recorder!.state !== "inactive") recorder!.stop();
   });
-  stream?.getTracks().forEach((t) => t.stop());
   const blob = new Blob(chunks, { type: chosenMime });
   const bytes = new Uint8Array(await blob.arrayBuffer());
   // chrome.runtime.sendMessage between offscreen and the service worker
