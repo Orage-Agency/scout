@@ -894,10 +894,13 @@ function recordingView(s: RecordingSessionState): HTMLElement {
     if (el) el.textContent = t.charAt(0).toUpperCase() + t.slice(1);
   });
 
-  // Live timer
+  // Live timer — reads from view.state so it stays accurate across pause/resume.
   const tEl = d.querySelector<HTMLSpanElement>("#t")!;
   const timerInterval = setInterval(() => {
-    const ms  = Date.now() - startedMs;
+    const cur = view.kind === "recording" ? view.state : null;
+    if (!cur) return;
+    if (cur.is_paused) return; // freeze display while paused
+    const ms  = Math.max(0, Date.now() - startedMs - (cur.paused_ms ?? 0));
     const sec = Math.floor(ms / 1000) % 60;
     const min = Math.floor(ms / 60000);
     tEl.textContent = `${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
