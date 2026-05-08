@@ -106,7 +106,7 @@ export type RuntimeMessage =
   | { type: "popup:resume_recording" }
   | { type: "popup:get_state" }
   | { type: "popup:state"; state: RecordingSessionState | null }
-  | { type: "popup:counts"; event_count: number; shot_count: number }
+  | { type: "popup:counts"; event_count: number; shot_count: number; last_event_desc?: string }
   | { type: "popup:recording_changed"; recording_id: string; status: RecordingRow["status"] }
   | { type: "content:event"; event: CapturedEvent }
   | { type: "content:show_toast"; ask: string }

@@ -876,6 +876,12 @@ function recordingView(s: RecordingSessionState): HTMLElement {
       <button id="stop" class="btn btn-primary flex-1">Stop</button>
     </div>
 
+    <!-- Live event feed -->
+    <div class="glass p-3" id="live-feed-card" style="min-height:52px;">
+      <div class="label mb-1.5" style="font-size:8px;">Live capture feed</div>
+      <ul id="live-feed" class="flex flex-col gap-0.5"></ul>
+    </div>
+
     <div class="glass p-3" style="min-height:52px;">
       <div class="label mb-1" style="font-size:8px;">Tip</div>
       <div id="tip-text" class="text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.55);transition:opacity 0.4s;"></div>
@@ -1963,6 +1969,19 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage) => {
     if (shEl) shEl.textContent = `${msg.shot_count} screenshots`;
     // Update live richness bar
     updateRichnessBar(msg.event_count, msg.shot_count);
+    // Update live event feed
+    if (msg.last_event_desc) {
+      const feed = document.getElementById("live-feed");
+      if (feed) {
+        const li = document.createElement("li");
+        li.className = "text-[10px] flex items-center gap-1.5";
+        li.style.color = "rgba(255,232,199,0.60)";
+        li.innerHTML = `<span style="width:5px;height:5px;border-radius:50%;background:#B68039;flex-shrink:0;"></span>${escapeHtml(msg.last_event_desc)}`;
+        feed.insertBefore(li, feed.firstChild);
+        // Keep max 4 entries
+        while (feed.children.length > 4) feed.removeChild(feed.lastChild!);
+      }
+    }
     return;
   }
   if (msg.type === "popup:recording_changed") {

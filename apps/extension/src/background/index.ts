@@ -437,6 +437,30 @@ async function captureTabAndQueue(
   await bumpCounters(ev);
 }
 
+function describeEvent(ev: CapturedEvent): string {
+  const d = ev.data ?? {};
+  switch (ev.kind) {
+    case "click": {
+      const t = d.target as { visibleText?: string; selector?: string } | undefined;
+      return `Clicked: ${t?.visibleText || t?.selector || "element"}`;
+    }
+    case "paste":  return `Pasted into form`;
+    case "copy":   return `Copied text`;
+    case "navigation": {
+      try { return `Navigated to ${new URL(String(d.to_url ?? "")).hostname}`; } catch { return "Navigation"; }
+    }
+    case "tab_switch": return `Switched tab`;
+    case "select_change": return `Selected: ${String(d.selected_text ?? "").slice(0, 30)}`;
+    case "checkbox_change": return `${d.checked ? "Checked" : "Unchecked"}: ${String(d.value ?? "").slice(0, 30)}`;
+    case "form_fill": {
+      const f = d.field as { visibleText?: string; selector?: string } | undefined;
+      return `Filled: ${f?.visibleText || f?.selector || "field"}`;
+    }
+    case "coach_reply": return `Replied to coach`;
+    default: return ev.kind.replace(/_/g, " ");
+  }
+}
+
 // Maintain live counters in session state so the popup can show an accurate
 // "N events / M screenshots" tally without polling Postgres. Persisting is
 // cheap (chrome.storage.session is in-memory) and tolerable per event.
@@ -451,6 +475,7 @@ async function bumpCounters(ev: CapturedEvent): Promise<void> {
       type: "popup:counts",
       event_count: s.event_count,
       shot_count: s.shot_count,
+      last_event_desc: describeEvent(ev),
     } satisfies RuntimeMessage)
     .catch(() => {});
   // Push live count to the active tab's floating bar.
