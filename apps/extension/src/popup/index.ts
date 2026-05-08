@@ -476,27 +476,36 @@ function recordTab(): HTMLElement {
 
 // ---- Library tab ----
 
+type LibSort = "newest" | "oldest" | "most-skills";
+
 function libraryTab(): HTMLElement {
   const d = document.createElement("div");
   d.className = "flex-1 flex flex-col px-5 py-4";
 
   const searchWrap = document.createElement("div");
-  searchWrap.className = "mb-3";
+  searchWrap.className = "mb-2";
   searchWrap.innerHTML = `
     <div style="position:relative;">
       <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);pointer-events:none;opacity:0.38;">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FFD69C" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35" stroke-linecap="round"/></svg>
       </span>
-      <input id="search" type="text" placeholder="Search recordings…" class="input" style="padding-left:30px;font-size:12px;" />
+      <input id="search" type="text" placeholder="Search by title or skill content…" class="input" style="padding-left:30px;font-size:12px;" />
     </div>
   `;
   d.appendChild(searchWrap);
 
-  const statsBar = document.createElement("div");
-  statsBar.id = "lib-stats";
-  statsBar.className = "flex items-center justify-between mb-2";
-  statsBar.innerHTML = `<span class="text-[10px]" style="color:rgba(255,232,199,0.28);">Loading…</span>`;
-  d.appendChild(statsBar);
+  // Sort controls + stats bar
+  const controlBar = document.createElement("div");
+  controlBar.className = "flex items-center justify-between mb-2";
+  controlBar.innerHTML = `
+    <span id="lib-stats" class="text-[10px]" style="color:rgba(255,232,199,0.28);">Loading…</span>
+    <div class="flex gap-1">
+      <button data-sort="newest" class="tab-pill active" style="font-size:9px;padding:3px 7px;">Newest</button>
+      <button data-sort="oldest" class="tab-pill" style="font-size:9px;padding:3px 7px;">Oldest</button>
+      <button data-sort="most-skills" class="tab-pill" style="font-size:9px;padding:3px 7px;">Most</button>
+    </div>
+  `;
+  d.appendChild(controlBar);
 
   const list = document.createElement("div");
   list.id = "list";
@@ -504,31 +513,51 @@ function libraryTab(): HTMLElement {
   d.appendChild(list);
 
   let allRecordings: Array<RecordingRow & { skills: SkillRow[] }> = [];
+  let currentSort: LibSort = "newest";
+
+  const getSorted = (): Array<RecordingRow & { skills: SkillRow[] }> => {
+    const copy = [...allRecordings];
+    if (currentSort === "oldest") return copy.reverse();
+    if (currentSort === "most-skills") return copy.sort((a, b) => (b.skills?.length ?? 0) - (a.skills?.length ?? 0));
+    return copy; // newest: already sorted by server
+  };
 
   const renderList = (query: string) => {
     const q = query.toLowerCase().trim();
-    const filtered = q
-      ? allRecordings.filter(r => {
-          if ((r.title || "").toLowerCase().includes(q)) return true;
-          const body = (r.skills ?? []).map(s => s.body_md ?? "").join(" ").toLowerCase();
-          return body.includes(q);
+    const words = q ? q.split(/\s+/).filter(Boolean) : [];
+    const sorted = getSorted();
+    const filtered = words.length
+      ? sorted.filter(r => {
+          const haystack = [
+            r.title ?? "",
+            ...(r.skills ?? []).map(s => s.body_md ?? ""),
+          ].join(" ").toLowerCase();
+          return words.every(w => haystack.includes(w));
         })
-      : allRecordings;
+      : sorted;
     renderCards(list, filtered, q);
   };
 
-  searchWrap.querySelector<HTMLInputElement>("#search")!.oninput = (e) => {
-    renderList((e.target as HTMLInputElement).value);
-  };
+  const searchInput = searchWrap.querySelector<HTMLInputElement>("#search")!;
+  searchInput.oninput = (e) => renderList((e.target as HTMLInputElement).value);
+
+  controlBar.querySelectorAll<HTMLButtonElement>("[data-sort]").forEach(btn => {
+    btn.onclick = () => {
+      currentSort = btn.getAttribute("data-sort") as LibSort;
+      controlBar.querySelectorAll<HTMLButtonElement>("[data-sort]").forEach(b => {
+        b.className = `tab-pill${b === btn ? " active" : ""}`;
+        b.style.cssText = "font-size:9px;padding:3px 7px;";
+      });
+      renderList(searchInput.value);
+    };
+  });
 
   loadLibraryData().then((data) => {
     if (!data) return;
     allRecordings = data;
     const totalSkills = allRecordings.reduce((n, r) => n + (r.skills?.length ?? 0), 0);
-    statsBar.innerHTML = `
-      <span class="text-[10px]" style="color:rgba(255,232,199,0.28);">${allRecordings.length} recording${allRecordings.length !== 1 ? "s" : ""} · ${totalSkills} skill${totalSkills !== 1 ? "s" : ""}</span>
-      <span class="text-[9px]" style="color:rgba(182,128,57,0.48);font-family:'Bebas Neue',sans-serif;letter-spacing:0.15em;">LIBRARY</span>
-    `;
+    const statsEl = controlBar.querySelector<HTMLSpanElement>("#lib-stats")!;
+    statsEl.textContent = `${allRecordings.length} recording${allRecordings.length !== 1 ? "s" : ""} · ${totalSkills} skill${totalSkills !== 1 ? "s" : ""}`;
     renderCards(list, allRecordings, "");
   });
 
