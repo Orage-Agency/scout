@@ -512,6 +512,19 @@
 .skill-md th { font-family: 'Bebas Neue', sans-serif; font-size: 10px; letter-spacing: 0.15em; color: #B68039; text-transform: uppercase; padding: 6px 8px; border-bottom: 1px solid rgba(182,128,57,0.22); text-align: left; }
 .skill-md td { padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); color: #FFE8C7; vertical-align: top; }
 .skill-md tr:last-child td { border-bottom: none; }
+.skill-var {
+  display: inline-block;
+  background: rgba(182,128,57,0.18);
+  color: #E4AF7A;
+  border: 1px solid rgba(182,128,57,0.38);
+  border-radius: 3px;
+  padding: 0 5px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  line-height: 1.8;
+  cursor: default;
+}
 
   /* ---- STREAMING SKILL PREVIEW ---- */
 

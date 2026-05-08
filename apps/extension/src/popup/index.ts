@@ -1085,7 +1085,7 @@ async function runAutoGenerate(rec: RecordingRow, extra?: string): Promise<void>
             liveStream += (evt.text as string) ?? "";
             const el = document.getElementById("stream-preview");
             if (el) {
-              el.innerHTML = marked.parse(liveStream, { async: false }) as string;
+              el.innerHTML = renderSkillMd(liveStream);
               el.scrollTop = el.scrollHeight;
             }
             // Advance progress bar from 80% → 95% as chunks arrive
@@ -1233,7 +1233,7 @@ function processingView(rec: RecordingRow, stage: "uploading" | "transcribing" |
   // populate the preview immediately.
   if (!error && stage === "drafting" && liveStream) {
     const el = d.querySelector<HTMLDivElement>("#stream-preview");
-    if (el) el.innerHTML = marked.parse(liveStream, { async: false }) as string;
+    if (el) el.innerHTML = renderSkillMd(liveStream);
   }
 
   if (error) {
@@ -1518,7 +1518,7 @@ function skillView(
   mdWrap.className = "relative";
   const md = document.createElement("article");
   md.className = "skill-md text-primary";
-  md.innerHTML = marked.parse(body, { async: false }) as string;
+  md.innerHTML = renderSkillMd(body);
   // Bottom fade to hint there's more content below
   const fade = document.createElement("div");
   fade.className = "skill-body-fade";
@@ -1594,7 +1594,7 @@ function toggleEditor(container: HTMLElement, skill: SkillRow, toggleBtn: HTMLBu
       const mdEl = container.querySelector<HTMLElement>("article.skill-md");
       if (mdEl) {
         const { body } = splitFrontmatter(stripImageRefs(newBody));
-        mdEl.innerHTML = marked.parse(body, { async: false }) as string;
+        mdEl.innerHTML = renderSkillMd(body);
       }
       setTimeout(() => { panel.remove(); toggleBtn.textContent = "Edit"; }, 800);
     } catch (e) {
@@ -1735,6 +1735,18 @@ async function runDryRun(skill: SkillRow, container: HTMLElement): Promise<void>
     btn.disabled = false;
     btn.textContent = "Test in cloud (dry-run)";
   }
+}
+
+function highlightVariables(html: string): string {
+  // Wrap {snake_case_var} in a styled span. Only match outside HTML tags
+  // (i.e. when not preceded by = or ") to avoid corrupting attributes.
+  return html.replace(/(?<![="a-zA-Z0-9])\{([a-z_][a-z0-9_]*)\}/g,
+    (_, name: string) => `<span class="skill-var">{${name}}</span>`);
+}
+
+function renderSkillMd(bodyMd: string): string {
+  const html = marked.parse(bodyMd, { async: false }) as string;
+  return highlightVariables(html);
 }
 
 function extractVariables(bodyMd: string): string[] {
