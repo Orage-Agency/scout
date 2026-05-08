@@ -43,8 +43,18 @@ async function refreshRole(): Promise<void> {
 }
 
 async function init(): Promise<void> {
-  const auth = getAuthSupabase();
-  const db = getDataSupabase();
+  let auth: ReturnType<typeof getAuthSupabase>, db: ReturnType<typeof getDataSupabase>;
+  try {
+    auth = getAuthSupabase();
+    db = getDataSupabase();
+  } catch {
+    // Supabase env vars not baked in at build time — show the sign-in form so
+    // the popup is at least renderable (smoke tests, dev without .env, etc.).
+    // Submitting will surface the config error via the form's error element.
+    view = { kind: "signed_out", mode: "signin" };
+    render();
+    return;
+  }
   const { data: sess } = await auth.auth.getSession();
   if (!sess.session) {
     view = { kind: "signed_out", mode: "signin" };
@@ -873,10 +883,12 @@ function escapeHtml(s: string): string {
 void init();
 
 // Re-render if auth state flips (e.g. magic link click in another tab).
-const authClient = getAuthSupabase();
-// Initialise the data client too so the bridge installs and mirrors sessions.
-getDataSupabase();
-authClient.auth.onAuthStateChange((_evt, sess) => {
+let authClient: ReturnType<typeof getAuthSupabase> | null = null;
+try {
+  authClient = getAuthSupabase();
+  getDataSupabase();
+} catch { /* unconfigured build — auth state changes are a no-op */ }
+authClient?.auth.onAuthStateChange((_evt, sess) => {
   if (!sess && view.kind !== "signed_out") {
     view = { kind: "signed_out", mode: "signin" };
     render();

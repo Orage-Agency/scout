@@ -1,5 +1,10 @@
 # Scout v1
 
+> **Latest update (v0.1.6)** — Three things changed:
+> 1. **Library always loads** — recordings no longer go missing when you reopen the extension.
+> 2. **Mic is now optional** — toggle voice narration on or off before you start recording. Your choice is remembered.
+> 3. **Popup never crashes** — the extension now opens cleanly even in dev builds without a configured backend.
+
 A Chrome extension that captures human workflows and turns them into structured `SKILL.md` files for AI agents.
 
 ---

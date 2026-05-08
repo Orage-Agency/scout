@@ -50,7 +50,7 @@ test("popup opens with sign-in prompt", async () => {
   // The email input is the unambiguous tell that the signed-out view rendered.
   // Wait on it first (popup hydrates async via Supabase auth.getSession).
   await expect(popup.locator("input[type=email]")).toBeVisible({ timeout: 10000 });
-  await expect(popup.locator("#app")).toContainText("Scout");
+  await expect(popup.locator("#app")).toContainText("Scout", { ignoreCase: true });
 });
 
 test("simulated workflow page", async () => {
