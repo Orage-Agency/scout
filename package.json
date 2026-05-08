@@ -13,6 +13,7 @@
     "db:reset": "supabase db reset",
     "functions:deploy": "supabase functions deploy coach && supabase functions deploy transcribe && supabase functions deploy generate-skill",
     "test:smoke": "playwright test tests/smoke.spec.ts",
+    "launch": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-scout.ps1",
     "package": "pnpm build && node scripts/package-extension.mjs"
   },
   "devDependencies": {
