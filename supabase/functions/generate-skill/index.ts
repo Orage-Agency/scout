@@ -85,8 +85,9 @@ Rules:
  - Names the target element by visible text or aria-label
  - Notes any decision logic (e.g., 'if total > $500, also check X')
  - Describes the visible UI state in prose if it disambiguates the step
- - DO NOT embed image references like ![](step_3.png). The SKILL.md is
-   text-only. Screenshots are available to the agent separately.>
+ - DO NOT embed image references like ![](step_3.png). The SKILL.md must
+   be self-contained text. Screenshots are provided to you during generation
+   for context only — they are NOT available when the skill is executed.>
 
 ## Faster path
 <Analyze the workflow and propose a faster automated equivalent that
@@ -488,10 +489,10 @@ function summarizeEvents(events: Array<{ ts_ms: number; kind: string; data: Reco
       lines.push(`${ts} paste "${((e.data as Record<string, unknown>).content_snippet as string) ?? ""}"`);
     } else if (e.kind === "navigation") {
       flushTyping();
-      lines.push(`${ts} navigate -> ${(e.data as Record<string, unknown>).to_url}`);
+      lines.push(`${ts} navigate -> ${truncateUrl(String((e.data as Record<string, unknown>).to_url ?? ""))}`);
     } else if (e.kind === "tab_switch") {
       flushTyping();
-      lines.push(`${ts} tab_switch -> ${(e.data as Record<string, unknown>).to_tab_url}`);
+      lines.push(`${ts} tab_switch -> ${truncateUrl(String((e.data as Record<string, unknown>).to_tab_url ?? ""))}`);
     } else {
       flushTyping();
       lines.push(`${ts} ${e.kind}`);
@@ -503,6 +504,17 @@ function summarizeEvents(events: Array<{ ts_ms: number; kind: string; data: Reco
   }
   flushTyping();
   return lines.join("\n");
+}
+
+function truncateUrl(url: string): string {
+  if (!url) return "?";
+  try {
+    const u = new URL(url);
+    const path = u.pathname.length > 48 ? u.pathname.slice(0, 45) + "…" : u.pathname;
+    return `${u.hostname}${path}`;
+  } catch {
+    return url.length > 80 ? url.slice(0, 77) + "…" : url;
+  }
 }
 
 function bufToBase64(buf: Uint8Array): string {

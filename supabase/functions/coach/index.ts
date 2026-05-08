@@ -51,7 +51,10 @@ function summarizeCoachEvents(
     } else if (e.kind === "paste") {
       lines.push(`${t} paste: "${((e.data.content_snippet as string) ?? "").slice(0, 40)}"`);
     } else if (e.kind === "navigation") {
-      lines.push(`${t} navigate: ${e.data.to_url}`);
+      const rawUrl = String(e.data.to_url ?? "");
+      let displayUrl = rawUrl;
+      try { const u = new URL(rawUrl); displayUrl = u.hostname + (u.pathname.length > 40 ? u.pathname.slice(0, 37) + "…" : u.pathname); } catch { /* not a URL */ }
+      lines.push(`${t} navigate: ${displayUrl}`);
     } else {
       lines.push(`${t} ${e.kind}`);
     }

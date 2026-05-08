@@ -1229,7 +1229,7 @@ function skillView(
   autoDownloaded = false,
 ): HTMLElement {
   const d = document.createElement("div");
-  d.className = "px-5 py-4 overflow-y-auto";
+  d.className = "px-5 py-4";
 
   // Back + header row
   const topRow = document.createElement("div");
@@ -1458,6 +1458,22 @@ function skillView(
   mdWrap.appendChild(md);
   mdWrap.appendChild(fade);
   d.appendChild(mdWrap);
+
+  // "Record again" CTA at the bottom
+  const cta = document.createElement("div");
+  cta.className = "glass p-4 mt-3 mb-2 flex items-center justify-between";
+  cta.innerHTML = `
+    <div>
+      <div class="text-[12px] font-semibold" style="color:#FFE8C7;">Capture another workflow?</div>
+      <div class="text-[10px] mt-0.5" style="color:rgba(255,232,199,0.40);">Each recording sharpens your AI agent.</div>
+    </div>
+    <button id="cta-record" class="btn btn-primary text-[11px]" style="padding:6px 12px;white-space:nowrap;">Record →</button>
+  `;
+  cta.querySelector<HTMLButtonElement>("#cta-record")!.onclick = () => {
+    view = { kind: "idle", tab: "record" };
+    render();
+  };
+  d.appendChild(cta);
 
   return d;
 }
