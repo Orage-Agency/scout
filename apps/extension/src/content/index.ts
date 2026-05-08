@@ -399,10 +399,15 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     `;
     box.innerHTML = `
       <div style="font-family:'Bebas Neue',sans-serif;font-size:11px;letter-spacing:0.18em;color:#B68039;margin-bottom:8px;text-transform:uppercase;">Scout · Coach</div>
-      <div style="margin-bottom:14px;color:#FFE8C7;">${escapeHtml(ask)}</div>
+      <div style="margin-bottom:12px;color:#FFE8C7;">${escapeHtml(ask)}</div>
+      <div style="display:flex;gap:6px;margin-bottom:10px;">
+        <input data-scout-text-reply type="text" placeholder="Type your reply…"
+          style="flex:1;background:rgba(0,0,0,0.45);border:1px solid rgba(182,128,57,0.30);border-radius:4px;color:#FFE8C7;font-size:12px;padding:6px 10px;font-family:inherit;outline:none;" />
+        <button data-scout-send style="background:linear-gradient(180deg,#C68A41 0%,#A77131 100%);border:1px solid rgba(228,175,122,0.55);color:#1a0e02;cursor:pointer;font-size:12px;padding:6px 10px;border-radius:4px;font-family:inherit;font-weight:700;">→</button>
+      </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;">
-        <button data-scout-skip style="background:transparent;border:0;color:rgba(255,232,199,0.55);cursor:pointer;font-size:12px;padding:6px 10px;font-family:inherit;">Skip</button>
-        <button data-scout-reply style="background:linear-gradient(180deg,#C68A41 0%,#A77131 100%);border:1px solid rgba(228,175,122,0.55);color:#1a0e02;cursor:pointer;font-size:12px;padding:6px 12px;border-radius:4px;font-family:inherit;font-weight:600;">Reply by voice</button>
+        <button data-scout-skip style="background:transparent;border:0;color:rgba(255,232,199,0.45);cursor:pointer;font-size:11px;padding:4px 8px;font-family:inherit;">Skip</button>
+        <button data-scout-reply style="background:transparent;border:1px solid rgba(182,128,57,0.25);color:#B68039;cursor:pointer;font-size:11px;padding:4px 10px;border-radius:4px;font-family:inherit;">🎙 Voice</button>
       </div>
     `;
     document.body.appendChild(box);
@@ -415,20 +420,32 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
       box.style.opacity = "0";
       setTimeout(() => box.remove(), 300);
     };
+    const sendTextReply = () => {
+      const inp = box.querySelector<HTMLInputElement>("[data-scout-text-reply]");
+      const text = inp?.value.trim();
+      if (!text) return;
+      post("coach_reply", { reply_text: text, question: ask });
+      dismiss();
+    };
+    box.querySelector<HTMLInputElement>("[data-scout-text-reply]")?.addEventListener("keydown", (e) => {
+      e.stopPropagation(); // prevent our own keydown listener from capturing this
+      if (e.key === "Enter") { e.preventDefault(); sendTextReply(); }
+    });
+    box.querySelector("[data-scout-send]")?.addEventListener("click", sendTextReply);
     box.querySelector("[data-scout-skip]")?.addEventListener("click", dismiss);
     box.querySelector("[data-scout-reply]")?.addEventListener("click", () => {
       const replyBtn = box.querySelector<HTMLButtonElement>("[data-scout-reply]");
       if (replyBtn) {
         replyBtn.textContent = "🎙 Listening…";
         replyBtn.style.background = "linear-gradient(180deg,#DC2626 0%,#9B1C1C 100%)";
-        replyBtn.style.borderColor = "rgba(220,38,38,0.55)";
+        replyBtn.style.border = "1px solid rgba(220,38,38,0.55)";
         replyBtn.style.color = "#fff";
         replyBtn.disabled = true;
       }
       box.style.borderColor = "rgba(220,38,38,0.55)";
       setTimeout(dismiss, 4000);
     });
-    setTimeout(dismiss, 20000);
+    setTimeout(dismiss, 25000);
   }
 
   function escapeHtml(s: string): string {

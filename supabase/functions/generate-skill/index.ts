@@ -505,6 +505,9 @@ function summarizeEvents(events: Array<{ ts_ms: number; kind: string; data: Reco
       const label = (d.field as { selector?: string; visibleText?: string } | undefined)?.visibleText
         ?? (d.field as { selector?: string } | undefined)?.selector ?? "field";
       lines.push(`${ts} fill "${label}" = "${String(d.value ?? "").slice(0, 60)}"`);
+    } else if (e.kind === "coach_reply") {
+      flushTyping();
+      lines.push(`${ts} [coach reply]: "${String((e.data as Record<string, unknown>).reply_text ?? "").slice(0, 100)}"`);
     } else {
       flushTyping();
       lines.push(`${ts} ${e.kind}`);
