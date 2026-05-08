@@ -37,6 +37,28 @@ interface CoachReq {
   ask_count?: number;
 }
 
+function summarizeCoachEvents(
+  events: Array<{ kind: string; ts_ms: number; data: Record<string, unknown> }>
+): string {
+  const lines: string[] = [];
+  for (const e of events) {
+    const t = `${Math.round(e.ts_ms / 1000)}s`;
+    if (e.kind === "click") {
+      const tgt = e.data?.target as { visibleText?: string; selector?: string } | undefined;
+      lines.push(`${t} click: ${tgt?.visibleText || tgt?.selector || "?"}`);
+    } else if (e.kind === "keydown") {
+      lines.push(`${t} key: ${e.data.key}`);
+    } else if (e.kind === "paste") {
+      lines.push(`${t} paste: "${((e.data.content_snippet as string) ?? "").slice(0, 40)}"`);
+    } else if (e.kind === "navigation") {
+      lines.push(`${t} navigate: ${e.data.to_url}`);
+    } else {
+      lines.push(`${t} ${e.kind}`);
+    }
+  }
+  return lines.join("\n") || "(no recent actions)";
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders() });
   try {
@@ -47,9 +69,12 @@ Deno.serve(async (req) => {
     const body = (await req.json()) as CoachReq;
     if ((body.ask_count ?? 0) >= 6) return json({ ask: null });
 
-    const userMsg = `Recent events: ${JSON.stringify(body.events).slice(0, 4000)}
-Recent narration: ${body.transcript_tail ?? ""}
-Asks so far this recording: ${body.ask_count ?? 0}`;
+    const eventSummary = summarizeCoachEvents(body.events);
+    const userMsg = `Recent actions (last 30s):
+${eventSummary}
+
+Recent narration: ${body.transcript_tail || "(none)"}
+Questions asked so far: ${body.ask_count ?? 0}`;
 
     const text = await callLLM({
       model: MODEL_COACH,
