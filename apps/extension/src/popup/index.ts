@@ -46,13 +46,24 @@ async function getRecordingMode(): Promise<"skill" | "improvement"> {
 // Cached role from the JWT app_metadata.role claim. "admin" means Orage; can
 // see all skills and download them. Anything else (including null) is "guest"
 // — the skill stays server-side, no download, no body shown.
-let currentRole: "admin" | "guest" = "guest";
-function isAdmin(): boolean { return currentRole === "admin"; }
-async function refreshRole(): Promise<void> {
-  const { data } = await getAuthSupabase().auth.getSession();
-  const claim = (data.session?.user?.app_metadata as { role?: string } | undefined)?.role;
-  currentRole = claim === "admin" ? "admin" : "guest";
-}
+//
+// TEMP (v0.1.11): isAdmin() is hard-set to true so every tester gets the
+// admin UI. The JWT-based read in refreshRole() is preserved so reverting
+// is just `return currentRole === "admin"` again. Pair-revert with
+// migration 0006_temp_everyone_admin.sql.
+// TEMP (v0.1.11): every signed-in user gets the admin UI. Pair-revert
+// with migration 0006_temp_everyone_admin.sql.
+//
+// To restore the JWT-based check, replace this block with:
+//   let currentRole: "admin" | "guest" = "guest";
+//   function isAdmin(): boolean { return currentRole === "admin"; }
+//   async function refreshRole(): Promise<void> {
+//     const { data } = await getAuthSupabase().auth.getSession();
+//     const claim = (data.session?.user?.app_metadata as { role?: string } | undefined)?.role;
+//     currentRole = claim === "admin" ? "admin" : "guest";
+//   }
+function isAdmin(): boolean { return true; }
+async function refreshRole(): Promise<void> { /* no-op while temp-admin */ }
 
 async function init(): Promise<void> {
   let auth: ReturnType<typeof getAuthSupabase>, db: ReturnType<typeof getDataSupabase>;
@@ -163,7 +174,7 @@ function header(active: "record" | "library" | "settings" | null): HTMLElement {
   h.innerHTML = `
     <div class="flex items-baseline gap-3">
       <span class="display text-[28px]" style="color:#E4AF7A;">SCOUT</span>
-      <span class="label" style="font-size:9px;">v0.1.10 · Orage AI</span>
+      <span class="label" style="font-size:9px;">v0.1.11 · Orage AI</span>
     </div>
     <div class="divider-gold"></div>
   `;
