@@ -587,7 +587,7 @@ async function runCoachCycle(): Promise<void> {
       },
       body: JSON.stringify({
         events: recentEvents,
-        transcript_tail: "", // v1: live transcription is deferred, so empty
+        transcript_tail: state.live_transcript_tail ?? "",
         ask_count: state.ask_count,
       }),
     });
@@ -917,6 +917,16 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse)
             await saveSession(s);
             // Tell the popup so it can show "audio: off" in the recording UI.
             chrome.runtime.sendMessage({ type: "popup:state", state: s } satisfies RuntimeMessage).catch(() => {});
+          }
+          sendResponse({ ok: true });
+          break;
+        }
+        case "offscreen:live_transcript": {
+          const s = await loadSession();
+          if (s) {
+            const combined = ((s.live_transcript_tail ?? "") + " " + msg.text).trim();
+            s.live_transcript_tail = combined.length > 200 ? combined.slice(-200) : combined;
+            await saveSession(s);
           }
           sendResponse({ ok: true });
           break;

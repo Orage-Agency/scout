@@ -53,6 +53,7 @@ export interface RecordingSessionState {
   shot_count: number;  // live counter of events with a screenshot attached
   active_tab_title?: string | null;
   active_tab_url?: string | null;
+  live_transcript_tail?: string; // rolling 200-char buffer of Web Speech API results
 }
 
 export interface CoachAsk {
@@ -118,4 +119,5 @@ export type RuntimeMessage =
   | { type: "popup:generate_skill"; recording_id: string; extra?: string }
   | { type: "popup:skill_ready"; skill: SkillRow }
   | { type: "popup:skill_error"; error: string }
-  | { type: "content:update_count"; event_count: number };
+  | { type: "content:update_count"; event_count: number }
+  | { type: "offscreen:live_transcript"; text: string };

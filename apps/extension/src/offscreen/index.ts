@@ -8,6 +8,50 @@ let stream: MediaStream | null = null;
 let chunks: BlobPart[] = [];
 let chosenMime = "audio/webm;codecs=opus";
 
+// Live speech-to-text via Web Speech API. Runs alongside MediaRecorder so the
+// background coach gets a rolling transcript tail without waiting for Whisper.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let recognition: any = null;
+
+function startSpeechRecognition(): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const SpeechRec = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+  if (!SpeechRec) return;
+  try {
+    recognition = new SpeechRec();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = "";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    recognition.onresult = (e: any) => {
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) {
+          const text = e.results[i][0].transcript.trim();
+          if (text) {
+            chrome.runtime.sendMessage({ type: "offscreen:live_transcript", text } satisfies RuntimeMessage).catch(() => {});
+          }
+        }
+      }
+    };
+    recognition.onerror = () => { /* silent — mic denied, network error etc */ };
+    recognition.onend = () => {
+      // Auto-restart if still active (recognition stops on long silence).
+      if (recognition) {
+        try { recognition.start(); } catch { /* already stopped */ }
+      }
+    };
+    recognition.start();
+  } catch { /* SpeechRecognition not supported in this context */ }
+}
+
+function stopSpeechRecognition(): void {
+  if (recognition) {
+    recognition.onend = null; // disable auto-restart before stopping
+    try { recognition.stop(); } catch { /* ignore */ }
+    recognition = null;
+  }
+}
+
 async function start(): Promise<void> {
   if (recorder) return;
   try {
@@ -35,6 +79,7 @@ async function start(): Promise<void> {
     } satisfies RuntimeMessage);
   };
   recorder.start(1000); // emit a chunk every 1s so we don't lose much on crash
+  startSpeechRecognition();
 }
 
 async function stop(): Promise<void> {
@@ -50,6 +95,7 @@ async function stop(): Promise<void> {
     } satisfies RuntimeMessage);
     return;
   }
+  stopSpeechRecognition();
   // Release the mic FIRST so Chrome's recording indicator clears immediately
   // and no further audio is captured. Stopping the tracks while the recorder
   // is still active causes the recorder to fire its final 'dataavailable'
