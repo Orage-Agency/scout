@@ -115,4 +115,5 @@ export type RuntimeMessage =
   | { type: "offscreen:audio_error"; error: string }
   | { type: "popup:generate_skill"; recording_id: string; extra?: string }
   | { type: "popup:skill_ready"; skill: SkillRow }
-  | { type: "popup:skill_error"; error: string };
+  | { type: "popup:skill_error"; error: string }
+  | { type: "content:update_count"; event_count: number };

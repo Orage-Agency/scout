@@ -542,11 +542,39 @@ function renderCards(container: HTMLElement, rows: Array<RecordingRow & { skills
 
   if (!rows.length) {
     container.innerHTML = `
-      <div class="glass p-6 text-center mt-2">
-        <div class="display text-[15px] mb-2">Nothing here yet</div>
-        <p class="text-[12px]" style="color:rgba(255,232,199,0.45);">Hit Record on any web page to make your first skill.</p>
+      <div class="glass p-5 mt-2">
+        <div class="display text-[15px]" style="color:#E4AF7A;">Your first skill</div>
+        <div class="display text-[15px] mb-4">is 3 clicks away.</div>
+        <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:20px;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#C68A41,#7A4F1E);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'Bebas Neue',sans-serif;font-size:11px;color:#1a0a00;">1</div>
+            <div>
+              <div class="text-[12px] font-semibold" style="color:#FFE8C7;">Switch to a workflow tab</div>
+              <div class="text-[10px]" style="color:rgba(255,232,199,0.38);">Any process you repeat regularly</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#C68A41,#7A4F1E);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'Bebas Neue',sans-serif;font-size:11px;color:#1a0a00;">2</div>
+            <div>
+              <div class="text-[12px] font-semibold" style="color:#FFE8C7;">Hit Record — narrate as you click</div>
+              <div class="text-[10px]" style="color:rgba(255,232,199,0.38);">Alt+Shift+R to toggle anywhere</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="width:22px;height:22px;border-radius:50%;background:linear-gradient(135deg,#C68A41,#7A4F1E);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'Bebas Neue',sans-serif;font-size:11px;color:#1a0a00;">3</div>
+            <div>
+              <div class="text-[12px] font-semibold" style="color:#FFE8C7;">Get a Claude Code skill file</div>
+              <div class="text-[10px]" style="color:rgba(255,232,199,0.38);">AI-readable, drops straight into ~/.claude</div>
+            </div>
+          </div>
+        </div>
+        <button id="goto-record" class="btn btn-primary w-full text-[12px]">Start my first recording →</button>
       </div>
     `;
+    container.querySelector<HTMLButtonElement>("#goto-record")?.addEventListener("click", () => {
+      view = { kind: "idle", tab: "record" };
+      render();
+    });
     return;
   }
 
@@ -1039,11 +1067,15 @@ function skillView(
   // Recording meta
   const meta = document.createElement("div");
   meta.className = "glass p-4 mb-3";
+  const qScore = skill ? skillQualityScore(rec, skill) : null;
   meta.innerHTML = `
     <div class="display text-[17px] mb-1" style="color:#E4AF7A;">${escapeHtml(rec.title || "Untitled")}</div>
-    <div class="text-[11px]" style="color:rgba(255,232,199,0.40);">
-      ${escapeHtml(new Date(rec.started_at).toLocaleString(undefined, { month:"short", day:"numeric", hour:"numeric", minute:"2-digit" }))}
-      · ${rec.duration_ms ? Math.round(rec.duration_ms / 1000) + "s" : "—"}
+    <div class="flex items-center gap-2 flex-wrap">
+      <span class="text-[11px]" style="color:rgba(255,232,199,0.40);">
+        ${escapeHtml(new Date(rec.started_at).toLocaleString(undefined, { month:"short", day:"numeric", hour:"numeric", minute:"2-digit" }))}
+        · ${rec.duration_ms ? Math.round(rec.duration_ms / 1000) + "s" : "—"}
+      </span>
+      ${qScore ? `<span style="font-family:'Bebas Neue',sans-serif;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:${qScore.color};background:rgba(0,0,0,0.28);border:1px solid currentColor;border-radius:3px;padding:1px 5px;opacity:0.85;" title="Skill quality: ${qScore.score}/100">${qScore.label}</span>` : ""}
     </div>
   `;
   d.appendChild(meta);
@@ -1332,6 +1364,38 @@ function toggleRefinePanel(container: HTMLElement, rec: RecordingRow, skill: Ski
   if (article) container.insertBefore(panel, article);
   else container.appendChild(panel);
   setTimeout(() => ta.focus(), 40);
+}
+
+// ---- Skill quality score ----
+
+function skillQualityScore(
+  rec: RecordingRow,
+  skill: SkillRow,
+): { score: number; label: string; color: string } {
+  let pts = 0;
+  const dur = rec.duration_ms ?? 0;
+  if (dur >= 120000) pts += 30;
+  else if (dur >= 30000) pts += 20;
+  else if (dur >= 5000) pts += 10;
+
+  const words = (rec.transcript?.segments ?? []).reduce(
+    (n, seg) => n + seg.text.split(/\s+/).filter(Boolean).length,
+    0,
+  );
+  if (words >= 100) pts += 30;
+  else if (words >= 20) pts += 20;
+  else if (words > 0) pts += 10;
+
+  const bodyLen = skill.body_md?.length ?? 0;
+  if (bodyLen >= 2000) pts += 40;
+  else if (bodyLen >= 800) pts += 25;
+  else if (bodyLen >= 200) pts += 15;
+
+  const score = Math.min(100, pts);
+  if (score >= 85) return { score, label: "Excellent", color: "#4ADE80" };
+  if (score >= 65) return { score, label: "Strong",    color: "#E4AF7A" };
+  if (score >= 40) return { score, label: "Good",      color: "rgba(255,232,199,0.65)" };
+  return              { score, label: "Minimal",        color: "rgba(255,232,199,0.35)" };
 }
 
 // ---- Utilities ----

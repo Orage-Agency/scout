@@ -450,6 +450,15 @@ async function bumpCounters(ev: CapturedEvent): Promise<void> {
       shot_count: s.shot_count,
     } satisfies RuntimeMessage)
     .catch(() => {});
+  // Push live count to the active tab's floating bar.
+  chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+    if (tab?.id) {
+      chrome.tabs.sendMessage(tab.id, {
+        type: "content:update_count",
+        event_count: s.event_count,
+      } satisfies RuntimeMessage).catch(() => {});
+    }
+  });
 }
 
 const SIGNIFICANT_KEYS = new Set(["Enter", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
@@ -915,6 +924,28 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse)
     }
   })();
   return true; // keep sendResponse alive for the async handler
+});
+
+// ---- Keyboard shortcut (Alt+Shift+R) ----
+
+chrome.commands.onCommand.addListener((command) => {
+  if (command !== "toggle-recording") return;
+  void (async () => {
+    const state = await loadSession();
+    if (state) {
+      await stopRecording();
+    } else {
+      const { data } = await getAuthSupabase().auth.getSession();
+      if (!data.session) return;
+      const v = await chrome.storage.local.get(["scout:mic_enabled", "scout:recording_mode", "scout:tier"]);
+      const mic = (v["scout:mic_enabled"] as boolean | undefined) ?? true;
+      const rawMode = v["scout:recording_mode"] as string | undefined;
+      const mode: "skill" | "improvement" = rawMode === "improvement" ? "improvement" : "skill";
+      const rawTier = v["scout:tier"] as string | undefined;
+      const tier: "quick" | "standard" | "deep" = rawTier === "quick" || rawTier === "deep" ? rawTier : "standard";
+      await startRecording(mic, mode, tier);
+    }
+  })();
 });
 
 // On worker wake, if a recording is in-flight, restart timers.

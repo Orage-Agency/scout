@@ -149,8 +149,9 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     `;
     bar.innerHTML = `
       <span data-scout-dot style="width:10px;height:10px;border-radius:50%;background:#DC2626;box-shadow:0 0 0 0 rgba(220,38,38,0.55);animation:scout-pulse 1.6s ease-in-out infinite;display:inline-block;flex-shrink:0;"></span>
-      <span data-scout-time style="font-variant-numeric: tabular-nums; min-width:42px; color:#E4AF7A; font-weight:600;">00:00</span>
-      <span style="flex:1;color:#B68039;font-family:'Bebas Neue',sans-serif;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;">Scout</span>
+      <span data-scout-time style="font-variant-numeric:tabular-nums;min-width:42px;color:#E4AF7A;font-weight:600;">00:00</span>
+      <span data-scout-count style="font-size:10px;color:rgba(228,175,122,0.55);font-variant-numeric:tabular-nums;min-width:24px;text-align:right;">0</span>
+      <span style="flex:1;color:#B68039;font-family:'Bebas Neue',sans-serif;font-size:11px;letter-spacing:0.18em;text-transform:uppercase;text-align:center;">Scout</span>
       <span data-scout-mic aria-label="Microphone active" title="Voice narration is recording" style="font-size:12px;display:none;animation:scout-mic-pulse 2s ease-in-out infinite;" role="img">🎙</span>
       <button data-scout-pause aria-label="Pause" style="background:transparent;border:0;color:#FFE8C7;cursor:pointer;padding:6px;font-size:14px;">⏸</button>
       <button data-scout-stop aria-label="Stop" style="background:transparent;border:0;color:#DC2626;cursor:pointer;padding:6px;font-weight:700;font-size:14px;">■</button>
@@ -382,6 +383,15 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
   // ---- Listen for service worker prompts ----
 
   chrome.runtime.onMessage.addListener((msg: RuntimeMessage, _sender, sendResponse) => {
+    if (msg.type === "content:update_count") {
+      const bar = document.getElementById(BAR_ID);
+      if (bar) {
+        const el = bar.querySelector<HTMLElement>("[data-scout-count]");
+        if (el) el.textContent = String(msg.event_count);
+      }
+      sendResponse({ ok: true });
+      return true;
+    }
     if (msg.type === "content:show_toast") {
       showToast(msg.ask);
       sendResponse({ ok: true });

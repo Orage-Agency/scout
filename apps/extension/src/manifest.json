@@ -37,6 +37,14 @@
       "matches": ["<all_urls>"]
     }
   ],
+  "commands": {
+    "toggle-recording": {
+      "suggested_key": {
+        "default": "Alt+Shift+R"
+      },
+      "description": "Start or stop recording"
+    }
+  },
   "icons": {
     "16": "public/icons/icon-16.png",
     "32": "public/icons/icon-32.png",
