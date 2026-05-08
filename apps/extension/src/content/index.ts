@@ -185,12 +185,21 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
       dragOff = null;
     });
 
+    const updatePauseVisual = (paused: boolean) => {
+      const dot = bar!.querySelector<HTMLElement>("[data-scout-dot]");
+      const pauseBtn = bar!.querySelector<HTMLButtonElement>("[data-scout-pause]");
+      if (dot) {
+        dot.style.background = paused ? "rgba(182,128,57,0.55)" : "#DC2626";
+        dot.style.animation = paused ? "none" : "scout-pulse 1.6s ease-in-out infinite";
+      }
+      if (pauseBtn) pauseBtn.textContent = paused ? "▶" : "⏸";
+    };
     bar.querySelector("[data-scout-pause]")?.addEventListener("click", async () => {
-      // Toggle pause/resume.
       const isPaused = bar!.getAttribute("data-paused") === "true";
       const type = isPaused ? "popup:resume_recording" : "popup:pause_recording";
       await chrome.runtime.sendMessage({ type } satisfies RuntimeMessage).catch(() => {});
       bar!.setAttribute("data-paused", String(!isPaused));
+      updatePauseVisual(!isPaused);
     });
     bar.querySelector("[data-scout-stop]")?.addEventListener("click", async () => {
       await chrome.runtime.sendMessage({ type: "popup:stop_recording" } satisfies RuntimeMessage).catch(() => {});
@@ -364,9 +373,16 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     };
     box.querySelector("[data-scout-skip]")?.addEventListener("click", dismiss);
     box.querySelector("[data-scout-reply]")?.addEventListener("click", () => {
-      // Mic is already capturing; we just acknowledge and dismiss.
-      box.style.borderColor = "#DC2626";
-      setTimeout(dismiss, 1500);
+      const replyBtn = box.querySelector<HTMLButtonElement>("[data-scout-reply]");
+      if (replyBtn) {
+        replyBtn.textContent = "🎙 Listening…";
+        replyBtn.style.background = "linear-gradient(180deg,#DC2626 0%,#9B1C1C 100%)";
+        replyBtn.style.borderColor = "rgba(220,38,38,0.55)";
+        replyBtn.style.color = "#fff";
+        replyBtn.disabled = true;
+      }
+      box.style.borderColor = "rgba(220,38,38,0.55)";
+      setTimeout(dismiss, 4000);
     });
     setTimeout(dismiss, 20000);
   }

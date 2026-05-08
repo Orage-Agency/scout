@@ -817,14 +817,26 @@ function recordingView(s: RecordingSessionState): HTMLElement {
     </div>
 
     <!-- Stats row -->
-    <div class="glass p-3 flex items-center justify-between">
-      <div>
-        <div id="evcount" class="text-[12px]" style="color:rgba(255,232,199,0.65);">${s.event_count ?? 0} events</div>
-        <div id="shotcount" class="text-[10px] mt-0.5" style="color:rgba(255,232,199,0.35);">${s.shot_count ?? 0} screenshots</div>
+    <div class="glass p-3">
+      <div class="flex items-center justify-between mb-2">
+        <div>
+          <div id="evcount" class="text-[12px]" style="color:rgba(255,232,199,0.65);">${s.event_count ?? 0} events</div>
+          <div id="shotcount" class="text-[10px] mt-0.5" style="color:rgba(255,232,199,0.35);">${s.shot_count ?? 0} screenshots</div>
+        </div>
+        <div class="text-right">
+          <div class="label" style="font-size:8px;">tier</div>
+          <div id="tier-display" class="text-[11px] mt-0.5" style="color:rgba(255,232,199,0.50);">Standard</div>
+        </div>
       </div>
-      <div class="text-right">
-        <div class="label" style="font-size:8px;">tier</div>
-        <div id="tier-display" class="text-[11px] mt-0.5" style="color:rgba(255,232,199,0.50);">Standard</div>
+      <!-- Live richness bar -->
+      <div>
+        <div class="flex items-center justify-between mb-1">
+          <span class="label" style="font-size:8px;">Recording richness</span>
+          <span id="richness-label" class="text-[9px]" style="color:rgba(255,232,199,0.35);">Warming up</span>
+        </div>
+        <div style="height:2px;background:rgba(255,255,255,0.05);border-radius:1px;overflow:hidden;">
+          <div id="richness-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#9A6228,#E4AF7A);border-radius:1px;transition:width 1.5s ease;"></div>
+        </div>
       </div>
     </div>
 
@@ -1690,6 +1702,21 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
+function updateRichnessBar(eventCount: number, shotCount: number): void {
+  const bar = document.getElementById("richness-bar");
+  const label = document.getElementById("richness-label");
+  if (!bar || !label) return;
+  // Score: events contribute 60%, screenshots 40%. Saturates around 30 events / 5 shots.
+  const evScore  = Math.min(1, eventCount / 30);
+  const shScore  = Math.min(1, shotCount / 5);
+  const pct      = Math.round((evScore * 0.6 + shScore * 0.4) * 100);
+  bar.style.width = `${pct}%`;
+  if (pct >= 80)       { label.textContent = "Excellent"; label.style.color = "#4ADE80"; }
+  else if (pct >= 55)  { label.textContent = "Good";      label.style.color = "#E4AF7A"; }
+  else if (pct >= 25)  { label.textContent = "Building";  label.style.color = "rgba(255,232,199,0.55)"; }
+  else                 { label.textContent = "Warming up"; label.style.color = "rgba(255,232,199,0.35)"; }
+}
+
 async function hydrateSkill(skillId: string): Promise<void> {
   if (view.kind !== "skill") return;
   const db = getDataSupabase();
@@ -1754,6 +1781,8 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage) => {
     const shEl = document.getElementById("shotcount");
     if (evEl) evEl.textContent = `${msg.event_count} events`;
     if (shEl) shEl.textContent = `${msg.shot_count} screenshots`;
+    // Update live richness bar
+    updateRichnessBar(msg.event_count, msg.shot_count);
     return;
   }
   if (msg.type === "popup:recording_changed") {
