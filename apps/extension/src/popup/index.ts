@@ -20,6 +20,8 @@ const root = document.getElementById("app")!;
 let view: View = { kind: "loading" };
 // Accumulates streaming skill chunks — updated in-place without full re-renders.
 let liveStream = "";
+// Preserved from the recording session on stop so extraContextView can show stats.
+let lastStopStats: { event_count: number; shot_count: number; had_voice: boolean } | null = null;
 
 const RECENT_KEY    = "scout:recent_recording_id";
 const MIC_PREF_KEY  = "scout:mic_enabled";
@@ -882,6 +884,12 @@ function recordingView(s: RecordingSessionState): HTMLElement {
       <ul id="live-feed" class="flex flex-col gap-0.5"></ul>
     </div>
 
+    <!-- Live transcript tail — only visible when voice is active and has text -->
+    <div class="glass p-3" id="transcript-card" style="min-height:44px;${!s.mic_enabled ? 'display:none;' : ''}">
+      <div class="label mb-1" style="font-size:8px;">Narration</div>
+      <div id="transcript-tail" class="text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.55);font-style:italic;min-height:16px;">${escapeHtml(s.live_transcript_tail ?? "")}</div>
+    </div>
+
     <div class="glass p-3" style="min-height:52px;">
       <div class="label mb-1" style="font-size:8px;">Tip</div>
       <div id="tip-text" class="text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.55);transition:opacity 0.4s;"></div>
@@ -953,6 +961,11 @@ function recordingView(s: RecordingSessionState): HTMLElement {
 
   d.querySelector<HTMLButtonElement>("#stop")!.onclick = async () => {
     const recordingId = s.recording_id;
+    lastStopStats = {
+      event_count: s.event_count ?? 0,
+      shot_count: s.shot_count ?? 0,
+      had_voice: !!(s.mic_enabled && s.live_transcript_tail),
+    };
     await chrome.storage.local.set({ [RECENT_KEY]: recordingId });
     void chrome.runtime.sendMessage({ type: "popup:stop_recording" } satisfies RuntimeMessage);
     const db = getDataSupabase();
@@ -977,12 +990,31 @@ function extraContextView(rec: RecordingRow): HTMLElement {
 
   const dur = rec.duration_ms ? `${Math.round(rec.duration_ms / 1000)}s` : "";
 
+  const evCount   = lastStopStats?.event_count ?? null;
+  const shotCount = lastStopStats?.shot_count ?? null;
+  const hasVoice  = lastStopStats?.had_voice ?? false;
+
   d.innerHTML = `
     <div class="glass p-5 flex flex-col gap-3">
       <div>
         <div class="display text-[18px]">Any other thoughts?</div>
         ${dur ? `<div class="text-[10px] mt-1" style="color:rgba(255,232,199,0.40);">${dur} captured · upload running in background</div>` : ""}
       </div>
+      ${evCount !== null ? `
+      <div class="flex gap-3 py-1">
+        <div style="text-align:center;flex:1;">
+          <div class="display text-[20px]" style="color:#E4AF7A;">${evCount}</div>
+          <div class="label" style="font-size:8px;">events</div>
+        </div>
+        <div style="text-align:center;flex:1;">
+          <div class="display text-[20px]" style="color:#E4AF7A;">${shotCount ?? 0}</div>
+          <div class="label" style="font-size:8px;">screenshots</div>
+        </div>
+        <div style="text-align:center;flex:1;">
+          <div class="display text-[20px]" style="color:${hasVoice ? '#4ADE80' : 'rgba(255,232,199,0.35)'};">${hasVoice ? '✓' : '—'}</div>
+          <div class="label" style="font-size:8px;">voice</div>
+        </div>
+      </div>` : ""}
       <p class="text-[12px] leading-relaxed" style="color:rgba(255,232,199,0.60);">
         If a step had a non-obvious reason — a rule, an exception, a why behind option A vs B — drop a note so the skill captures it.
       </p>
@@ -1985,6 +2017,16 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage) => {
         while (feed.children.length > 4) feed.removeChild(feed.lastChild!);
       }
     }
+    return;
+  }
+  if (msg.type === "popup:transcript_tail") {
+    const el = document.getElementById("transcript-tail");
+    const card = document.getElementById("transcript-card");
+    if (el) {
+      el.textContent = msg.tail;
+      if (card && msg.tail) card.style.display = "";
+    }
+    if (view.kind === "recording") view.state.live_transcript_tail = msg.tail;
     return;
   }
   if (msg.type === "popup:recording_changed") {

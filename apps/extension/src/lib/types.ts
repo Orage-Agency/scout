@@ -121,4 +121,5 @@ export type RuntimeMessage =
   | { type: "popup:skill_ready"; skill: SkillRow }
   | { type: "popup:skill_error"; error: string }
   | { type: "content:update_count"; event_count: number; is_paused?: boolean }
-  | { type: "offscreen:live_transcript"; text: string };
+  | { type: "offscreen:live_transcript"; text: string }
+  | { type: "popup:transcript_tail"; tail: string };

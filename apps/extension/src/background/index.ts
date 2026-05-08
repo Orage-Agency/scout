@@ -1016,6 +1016,9 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse)
             const combined = ((s.live_transcript_tail ?? "") + " " + msg.text).trim();
             s.live_transcript_tail = combined.length > 200 ? combined.slice(-200) : combined;
             await saveSession(s);
+            chrome.runtime
+              .sendMessage({ type: "popup:transcript_tail", tail: s.live_transcript_tail } satisfies RuntimeMessage)
+              .catch(() => {});
           }
           sendResponse({ ok: true });
           break;
