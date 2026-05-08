@@ -332,20 +332,23 @@ function libraryTab(): HTMLElement {
 async function loadLibrary(container: HTMLDivElement): Promise<void> {
   container.innerHTML = `<div class="text-muted text-xs">Loading…</div>`;
   const db = getDataSupabase();
-  // Explicit user_id filter is belt-and-suspenders on top of RLS — also
-  // ensures we get the right user's recordings if the JWT was just rotated.
+  // Explicit user_id filter for guests — belt-and-suspenders on top of RLS
+  // and a guard against the JWT-just-rotated edge case. Admins skip the
+  // filter so they can see every guest's recordings (RLS already permits
+  // admins to SELECT all rows; see migration 0003_admin_role.sql).
   const { data: authUser } = await getAuthSupabase().auth.getUser();
   const userId = authUser.user?.id;
   if (!userId) {
     container.innerHTML = `<div class="text-muted text-xs">Not signed in.</div>`;
     return;
   }
-  const { data, error } = await db
+  let query = db
     .from("recordings")
     .select("*, skills(id,version,title,created_at)")
-    .eq("user_id", userId)
     .order("started_at", { ascending: false })
     .limit(50);
+  if (!isAdmin()) query = query.eq("user_id", userId);
+  const { data, error } = await query;
   if (error) {
     container.innerHTML = `<div class="text-accent text-xs">${escapeHtml(error.message)}</div>`;
     return;
