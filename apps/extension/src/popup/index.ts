@@ -57,29 +57,6 @@ async function getRecordingMode(): Promise<"skill" | "improvement"> {
 function isAdmin(): boolean { return true; }
 async function refreshRole(): Promise<void> { /* no-op while temp-admin */ }
 
-// ---- Runtime message listener (background → popup) ----
-
-chrome.runtime.onMessage.addListener((msg) => {
-  const m = msg as RuntimeMessage;
-  if (m.type === "popup:counts") {
-    // Update live counters in recording view without full re-render.
-    const evEl = document.getElementById("evcount");
-    const shEl = document.getElementById("shotcount");
-    if (evEl) evEl.textContent = `${m.event_count} events`;
-    if (shEl) shEl.textContent = `${m.shot_count} screenshots`;
-  } else if (m.type === "popup:recording_changed") {
-    // Refresh library cards if library is open.
-    if (view.kind === "idle" && view.tab === "library") {
-      loadLibraryData().then((data) => {
-        if (data) {
-          const list = document.getElementById("list");
-          if (list) renderCards(list, data);
-        }
-      });
-    }
-  }
-  return false;
-});
 
 // ---- Boot ----
 
@@ -638,11 +615,12 @@ function renderCards(container: HTMLElement, rows: Array<RecordingRow & { skills
     const hasSkill = (r.skills?.length ?? 0) > 0;
     const kindsPresent = new Set((r.skills ?? []).map(s => s.kind ?? "skill"));
     const hasBoth  = kindsPresent.has("skill") && kindsPresent.has("improvement");
+    const maxVersion = hasSkill ? Math.max(...(r.skills ?? []).map(s => s.version ?? 1)) : 1;
     const statusCls  = statusColor(r.status);
     const kindBadge  = r.mode === "improvement"
       ? `<span class="badge badge-orange" style="margin-left:4px;">brief</span>` : "";
     const skillBadge = hasSkill
-      ? `<span class="badge badge-gold">${hasBoth ? "✦ Skill + Brief" : "✦ Skill"}</span>` : "";
+      ? `<span class="badge badge-gold">${hasBoth ? "✦ Skill + Brief" : "✦ Skill"}${maxVersion > 1 ? ` · v${maxVersion}` : ""}</span>` : "";
 
     // Skill excerpt from the first non-heading content line
     const primarySkill = (r.skills ?? []).find(s => (s.kind ?? "skill") === "skill") ?? (r.skills ?? [])[0];
@@ -1068,7 +1046,23 @@ async function runAutoGenerate(rec: RecordingRow, extra?: string): Promise<void>
               el.innerHTML = marked.parse(liveStream, { async: false }) as string;
               el.scrollTop = el.scrollHeight;
             }
+            // Advance progress bar from 80% → 95% as chunks arrive
+            const bar = document.getElementById("gen-progress-bar");
+            const pct = document.getElementById("gen-progress-pct");
+            if (bar) {
+              const cur = parseFloat(bar.style.width) || 80;
+              if (cur < 95) {
+                const next = Math.min(95, cur + 0.6);
+                bar.style.width = `${next}%`;
+                if (pct) pct.textContent = `${Math.round(next)}%`;
+              }
+            }
           } else if (evt.type === "done") {
+            // Complete the progress bar before transitioning
+            const bar = document.getElementById("gen-progress-bar");
+            const pct = document.getElementById("gen-progress-pct");
+            if (bar) { bar.style.width = "100%"; if (pct) pct.textContent = "100%"; }
+            await new Promise((r) => setTimeout(r, 500));
             const allSkills = (evt.all as SkillRow[] | undefined) ?? [evt as unknown as SkillRow];
             const skillKindRow = allSkills.find(s => (s.kind ?? "skill") === "skill") ?? allSkills[0];
             let autoDownloaded = false;
@@ -1158,7 +1152,7 @@ function processingView(rec: RecordingRow, stage: "uploading" | "transcribing" |
     <div class="glass p-5">
       <div class="flex items-start justify-between mb-1">
         <div class="display text-[18px]">${error ? "Something went wrong" : "Finishing up"}</div>
-        ${!error ? `<span class="text-[11px]" style="color:rgba(255,232,199,0.35);font-variant-numeric:tabular-nums;">${progressPct}%</span>` : ""}
+        ${!error ? `<span id="gen-progress-pct" class="text-[11px]" style="color:rgba(255,232,199,0.35);font-variant-numeric:tabular-nums;">${progressPct}%</span>` : ""}
       </div>
       <div class="text-[11px] mb-3" style="color:rgba(255,232,199,0.45);">
         ${error
@@ -1167,7 +1161,7 @@ function processingView(rec: RecordingRow, stage: "uploading" | "transcribing" |
       </div>
       ${!error ? `
         <div style="height:2px;background:rgba(255,255,255,0.05);border-radius:1px;margin-bottom:16px;overflow:hidden;">
-          <div style="height:100%;width:${progressPct}%;background:linear-gradient(90deg,#9A6228,#E4AF7A);border-radius:1px;transition:width 0.6s ease;"></div>
+          <div id="gen-progress-bar" style="height:100%;width:${progressPct}%;background:linear-gradient(90deg,#9A6228,#E4AF7A);border-radius:1px;transition:width 0.6s ease;"></div>
         </div>` : ""}
       ${error
         ? `<div class="glass-strong p-3 text-[12px] mb-3" style="color:#F87171;">${escapeHtml(error)}</div>`
@@ -1711,13 +1705,15 @@ async function refreshSkillView(recordingId: string): Promise<void> {
   const db = getDataSupabase();
   const { data: rec } = await db
     .from("recordings")
-    .select("*, skills(id,recording_id,user_id,version,title,body_md,prompt_used,created_at)")
+    .select("*, skills(id,recording_id,user_id,version,title,body_md,kind,prompt_used,created_at)")
     .eq("id", recordingId)
     .single();
   if (!rec) return;
   const skills = (rec as RecordingRow & { skills?: SkillRow[] }).skills ?? [];
   const sorted = [...skills].sort((a, b) => b.version - a.version);
-  view = { kind: "skill", recording: rec as RecordingRow, skill: sorted[0] ?? null, allSkills: sorted };
+  const recMode = (rec as RecordingRow).mode ?? "skill";
+  const primary = sorted.find(s => (s.kind ?? "skill") === recMode) ?? sorted[0] ?? null;
+  view = { kind: "skill", recording: rec as RecordingRow, skill: primary, allSkills: sorted };
   render();
 }
 
@@ -1753,11 +1749,11 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage) => {
     if (view.kind === "recording") {
       view.state.event_count = msg.event_count;
       view.state.shot_count  = msg.shot_count;
-      const evEl  = document.getElementById("evcount");
-      const shEl  = document.getElementById("shotcount");
-      if (evEl) evEl.textContent  = `${msg.event_count} events`;
-      if (shEl) shEl.textContent  = `${msg.shot_count} screenshots`;
     }
+    const evEl = document.getElementById("evcount");
+    const shEl = document.getElementById("shotcount");
+    if (evEl) evEl.textContent = `${msg.event_count} events`;
+    if (shEl) shEl.textContent = `${msg.shot_count} screenshots`;
     return;
   }
   if (msg.type === "popup:recording_changed") {
@@ -1766,7 +1762,12 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage) => {
       return;
     }
     if (view.kind === "idle" && view.tab === "library") {
-      render();
+      loadLibraryData().then((data) => {
+        if (data) {
+          const list = document.getElementById("list");
+          if (list) renderCards(list, data);
+        }
+      });
     }
   }
 });
