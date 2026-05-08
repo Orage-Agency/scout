@@ -85,6 +85,10 @@ Rules:
  - Names the target element by visible text or aria-label
  - Notes any decision logic (e.g., 'if total > $500, also check X')
  - Describes the visible UI state in prose if it disambiguates the step
+ - Ends with a "→ Wait for:" clause when the action triggers a load, save,
+   or state change (e.g., "→ Wait for: success toast or URL changes to /dashboard")
+ - Mentions keyboard shortcuts as alternatives when the recording shows one
+   (e.g., "Click Save (or Ctrl+S)")
  - DO NOT embed image references like ![](step_3.png). The SKILL.md must
    be self-contained text. Screenshots are provided to you during generation
    for context only — they are NOT available when the skill is executed.>
@@ -121,7 +125,11 @@ rules that aren't obvious from the screen alone.>
 If not seen, write 'None observed.'>
 
 ## Done when
-<How the agent knows the task succeeded.>`;
+<How the agent knows the task succeeded. Include the visible UI signal:
+success toast text, URL pattern, status badge value, or confirmation
+dialog. Be specific — "page reloads" is not enough; "status changes to
+'Sent'" is.>`;
+
 
 // Used when recording.mode === 'improvement'. Output is a paste-ready brief
 // for Claude Code, not a SKILL.md. The user is critiquing an app they're
