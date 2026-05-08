@@ -537,7 +537,7 @@ function libraryTab(): HTMLElement {
           return body.includes(q);
         })
       : allRecordings;
-    renderCards(list, filtered);
+    renderCards(list, filtered, q);
   };
 
   searchWrap.querySelector<HTMLInputElement>("#search")!.oninput = (e) => {
@@ -552,7 +552,7 @@ function libraryTab(): HTMLElement {
       <span class="text-[10px]" style="color:rgba(255,232,199,0.28);">${allRecordings.length} recording${allRecordings.length !== 1 ? "s" : ""} · ${totalSkills} skill${totalSkills !== 1 ? "s" : ""}</span>
       <span class="text-[9px]" style="color:rgba(182,128,57,0.48);font-family:'Bebas Neue',sans-serif;letter-spacing:0.15em;">LIBRARY</span>
     `;
-    renderCards(list, allRecordings);
+    renderCards(list, allRecordings, "");
   });
 
   return d;
@@ -576,10 +576,19 @@ async function loadLibraryData(): Promise<Array<RecordingRow & { skills: SkillRo
   return (data ?? []) as Array<RecordingRow & { skills: SkillRow[] }>;
 }
 
-function renderCards(container: HTMLElement, rows: Array<RecordingRow & { skills: SkillRow[] }>): void {
+function renderCards(container: HTMLElement, rows: Array<RecordingRow & { skills: SkillRow[] }>, query = ""): void {
   container.innerHTML = "";
 
   if (!rows.length) {
+    if (query) {
+      container.innerHTML = `
+        <div class="glass p-5 mt-2 text-center">
+          <div class="display text-[13px] mb-1">No results</div>
+          <p class="text-[11px]" style="color:rgba(255,232,199,0.40);">Nothing matched <strong style="color:#E4AF7A;">"${escapeHtml(query)}"</strong> — try a different term or clear the search.</p>
+        </div>
+      `;
+      return;
+    }
     container.innerHTML = `
       <div class="glass p-5 mt-2">
         <div class="display text-[15px]" style="color:#E4AF7A;">Your first skill</div>
@@ -699,6 +708,12 @@ function settingsTab(): HTMLElement {
     </div>
 
     <div class="glass p-4">
+      <div class="label mb-3" style="font-size:9px;">Export</div>
+      <button id="export-all" class="btn w-full text-[12px] mb-2">Download all skills</button>
+      <p class="text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.38);">All your skill files as a .zip — ready to drop into ~/.claude/skills/.</p>
+    </div>
+
+    <div class="glass p-4">
       <div class="label mb-3" style="font-size:9px;">Data</div>
       <button id="del" class="btn btn-danger w-full text-[12px]">Delete all my data</button>
       <p class="text-[11px] leading-relaxed mt-2" style="color:rgba(255,232,199,0.38);">Cascades through recordings, events, screenshots, audio, and skills. Cannot be undone.</p>
@@ -739,6 +754,45 @@ function settingsTab(): HTMLElement {
     await auth.auth.signOut();
     view = { kind: "signed_out", mode: "signin" };
     render();
+  };
+
+  d.querySelector<HTMLButtonElement>("#export-all")!.onclick = async () => {
+    const btn = d.querySelector<HTMLButtonElement>("#export-all")!;
+    btn.disabled = true;
+    btn.textContent = "Preparing…";
+    try {
+      const { data: authUser } = await auth.auth.getUser();
+      if (!authUser.user) throw new Error("not signed in");
+      const { data: skills } = await db
+        .from("skills")
+        .select("title,body_md,kind,version")
+        .eq("user_id", authUser.user.id)
+        .order("created_at", { ascending: false });
+      if (!skills || skills.length === 0) {
+        btn.textContent = "No skills yet";
+        setTimeout(() => { btn.disabled = false; btn.textContent = "Download all skills"; }, 2000);
+        return;
+      }
+      const entries: { [k: string]: ReturnType<typeof strToU8> } = {};
+      for (const s of skills as Array<{ title: string | null; body_md: string; kind?: string; version: number }>) {
+        const slug = (s.body_md.match(/^name:\s*(.+)$/m)?.[1] ?? s.title ?? "skill").trim().replace(/[^a-zA-Z0-9_-]/g, "-");
+        const kindSuffix = s.kind === "improvement" ? "-improvement" : "";
+        const filename = `${slug}${kindSuffix}-v${s.version}/SKILL.md`;
+        entries[filename] = strToU8(s.body_md);
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const zip = zipSync(entries as any);
+      const blob = new Blob([zip as BlobPart], { type: "application/zip" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "scout-skills.zip"; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      btn.textContent = `Downloaded ${skills.length} skill${skills.length !== 1 ? "s" : ""}`;
+      setTimeout(() => { btn.disabled = false; btn.textContent = "Download all skills"; }, 3000);
+    } catch (e) {
+      btn.textContent = `Error: ${(e as Error).message}`;
+      setTimeout(() => { btn.disabled = false; btn.textContent = "Download all skills"; }, 3000);
+    }
   };
 
   d.querySelector<HTMLButtonElement>("#del")!.onclick = async () => {
@@ -1097,14 +1151,24 @@ function processingView(rec: RecordingRow, stage: "uploading" | "transcribing" |
     `;
   }).join("");
 
+  // Rough progress: uploading=20%, transcribing=50%, drafting=80% (bumps toward 100 during streaming)
+  const progressPct = stage === "uploading" ? 20 : stage === "transcribing" ? 50 : 80;
+
   d.innerHTML = `
     <div class="glass p-5">
-      <div class="display text-[18px] mb-1">${error ? "Something went wrong" : "Finishing up"}</div>
-      <div class="text-[11px] mb-4" style="color:rgba(255,232,199,0.45);">
+      <div class="flex items-start justify-between mb-1">
+        <div class="display text-[18px]">${error ? "Something went wrong" : "Finishing up"}</div>
+        ${!error ? `<span class="text-[11px]" style="color:rgba(255,232,199,0.35);font-variant-numeric:tabular-nums;">${progressPct}%</span>` : ""}
+      </div>
+      <div class="text-[11px] mb-3" style="color:rgba(255,232,199,0.45);">
         ${error
           ? "Your recording was saved — retry from the library."
           : `${rec.duration_ms ? Math.round(rec.duration_ms / 1000) + "s recording" : "Processing"} · usually 30–60s`}
       </div>
+      ${!error ? `
+        <div style="height:2px;background:rgba(255,255,255,0.05);border-radius:1px;margin-bottom:16px;overflow:hidden;">
+          <div style="height:100%;width:${progressPct}%;background:linear-gradient(90deg,#9A6228,#E4AF7A);border-radius:1px;transition:width 0.6s ease;"></div>
+        </div>` : ""}
       ${error
         ? `<div class="glass-strong p-3 text-[12px] mb-3" style="color:#F87171;">${escapeHtml(error)}</div>`
         : stepsHtml}
