@@ -250,10 +250,30 @@ async function resumeRecording(): Promise<void> {
   startTimers();
 }
 
+// MV3 service workers hibernate after ~30s of idle, which silently kills
+// setInterval. chrome.alarms is the only timer that wakes the worker back
+// up. We use an alarm for the flush + coach cadences AND keep the existing
+// setInterval as a fast-path for the case where the worker is already
+// alive (alarms are clamped to a 30s minimum in production builds, while
+// our flush wants 5s when active). The setInterval still runs while the
+// worker is alive; the alarm is the safety net during long quiet stretches.
+
+const ALARM_FLUSH = "scout-flush";
+const ALARM_COACH = "scout-coach";
+// chrome.alarms minimum period in production builds is 30s. We accept the
+// trade: during a hibernate-and-wake cycle, the next flush could be up to
+// 30s late instead of 5s late. Mid-recording, when the user is interacting,
+// the setInterval below fires every 5s as expected.
+const ALARM_FLUSH_MIN = 0.5; // 30s in minutes
+const ALARM_COACH_MIN = 0.5; // 30s, same as the existing coach cadence
+
 function startTimers(): void {
   stopTimers();
   flushTimer = setInterval(() => void flushBuffer(), FLUSH_INTERVAL_MS) as unknown as number;
   coachTimer = setInterval(() => void runCoachCycle(), COACH_INTERVAL_MS) as unknown as number;
+  // Schedule alarms so a hibernated worker is woken up to flush.
+  chrome.alarms.create(ALARM_FLUSH, { periodInMinutes: ALARM_FLUSH_MIN });
+  chrome.alarms.create(ALARM_COACH, { periodInMinutes: ALARM_COACH_MIN });
 }
 
 function stopTimers(): void {
@@ -265,7 +285,17 @@ function stopTimers(): void {
     clearInterval(coachTimer as unknown as number);
     coachTimer = null;
   }
+  chrome.alarms.clear(ALARM_FLUSH).catch(() => {});
+  chrome.alarms.clear(ALARM_COACH).catch(() => {});
 }
+
+// Alarm handler: woken up after hibernation, run the catch-up flush + coach.
+// Top-level listener registration (not gated on a recording) so the worker
+// rebinds it on cold start and responds to alarms even after a kill.
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === ALARM_FLUSH) void flushBuffer();
+  else if (alarm.name === ALARM_COACH) void runCoachCycle();
+});
 
 // ---- Event ingestion ----
 

@@ -28,6 +28,10 @@ export interface ContentBlock {
   source?:
     | { type: "base64"; media_type: string; data: string }
     | { type: "url"; url: string };
+  // Anthropic prompt-cache breakpoint. When set, Anthropic caches the
+  // request prefix up to and including this block. Subsequent calls with
+  // the same prefix within ~5 minutes pay ~10% of the input-token price.
+  cache_control?: { type: "ephemeral" };
 }
 
 export interface LLMMessage {
@@ -54,11 +58,17 @@ export async function callLLM(req: LLMRequest): Promise<string> {
 // ---- Anthropic direct ----
 
 async function callAnthropic(req: LLMRequest, key: string): Promise<string> {
+  // System prompt is wrapped as a content block so we can mark it cacheable.
+  // The Messages API accepts both `system: string` and `system: ContentBlock[]`;
+  // when caching is enabled we always go with the array form.
+  const systemBlocks = req.system
+    ? [{ type: "text", text: req.system, cache_control: { type: "ephemeral" } }]
+    : undefined;
   const body = {
     model: anthropicModelId(req.model ?? DEFAULT_MODEL),
     max_tokens: req.max_tokens,
     temperature: req.temperature,
-    system: req.system,
+    system: systemBlocks,
     messages: req.messages.map(toAnthropicMessage),
   };
   const res = await fetch(ANTHROPIC_API, {
@@ -72,7 +82,17 @@ async function callAnthropic(req: LLMRequest, key: string): Promise<string> {
   });
   if (!res.ok) throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
   const data = await res.json();
-  // Concatenate any text blocks in the response.
+  // Surface cache stats so cost-tracing is easy: usage.cache_creation_input_tokens
+  // (paid 1.25× this once, then 0.1× on subsequent hits within 5 min) and
+  // cache_read_input_tokens (already paid 1.25× upstream, charged 0.1× now).
+  const u = data.usage as
+    | { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
+    | undefined;
+  if (u) {
+    console.log(
+      `[llm] in=${u.input_tokens ?? 0} out=${u.output_tokens ?? 0} cache_write=${u.cache_creation_input_tokens ?? 0} cache_read=${u.cache_read_input_tokens ?? 0}`,
+    );
+  }
   const blocks = (data.content as Array<{ type: string; text?: string }> | undefined) ?? [];
   return blocks.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
 }
@@ -83,12 +103,13 @@ function toAnthropicMessage(m: LLMMessage): Record<string, unknown> {
   const parts: any[] = [];
   for (const b of m.content) {
     if (b.type === "text") {
-      parts.push({ type: "text", text: b.text ?? "" });
+      const part: Record<string, unknown> = { type: "text", text: b.text ?? "" };
+      if (b.cache_control) part.cache_control = b.cache_control;
+      parts.push(part);
     } else if ((b.type === "image" || b.type === "document") && b.source) {
-      // Anthropic expects { type: "image", source: { type: "base64", media_type, data } }
-      // or { type: "image", source: { type: "url", url } }. Pass through as-is
-      // since our ContentBlock.source already matches that shape.
-      parts.push({ type: "image", source: b.source });
+      const part: Record<string, unknown> = { type: "image", source: b.source };
+      if (b.cache_control) part.cache_control = b.cache_control;
+      parts.push(part);
     }
   }
   return { role: m.role, content: parts };

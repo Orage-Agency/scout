@@ -210,18 +210,32 @@ Deno.serve(async (req) => {
       .eq("recording_id", recording_id)
       .order("asked_at_ms", { ascending: true });
 
+    // Decide whether each prompt actually NEEDS images. Skipping images
+    // when the events are well-described (every click has visibleText
+    // and a strong selector) saves ~$0.05 per call without hurting
+    // quality. Improvement mode always gets images — visual evidence is
+    // the whole point. Skill mode gets them only when the click events
+    // don't carry enough textual signal on their own.
+    const needsImagesForSkill = !eventsHaveStrongTextSignal(events ?? []);
     const sampledPaths = sampleScreenshots(events ?? [], coachLog ?? []);
-    const images: Array<{ type: "image"; source: { type: "base64"; media_type: string; data: string } }> = [];
+    const allImages: Array<{ type: "image"; source: { type: "base64"; media_type: string; data: string } }> = [];
     for (const path of sampledPaths) {
       const { data: blob } = await admin.storage.from("screenshots").download(path);
       if (!blob) continue;
       const ab = await blob.arrayBuffer();
       const b64 = bufToBase64(new Uint8Array(ab));
-      images.push({
+      allImages.push({
         type: "image",
         source: { type: "base64", media_type: blob.type || "image/jpeg", data: b64 },
       });
     }
+    // Both prompts may use a different number of images. Improvement always
+    // uses all of them; Skill uses zero when text signal is strong, else 6.
+    const imagesForImprovement = allImages;
+    const imagesForSkill = needsImagesForSkill ? allImages.slice(0, 6) : [];
+    console.log(
+      `[generate-skill] images: improvement=${imagesForImprovement.length} skill=${imagesForSkill.length} (text-signal-strong=${!needsImagesForSkill})`,
+    );
 
     const transcriptText = (rec.transcript?.segments ?? [])
       .map((s: { start_ms: number; text: string }) => `[${Math.round(s.start_ms / 1000)}s] ${s.text}`)
@@ -238,11 +252,18 @@ ${transcriptText || "(no narration)"}
 COACH ASKS AND REPLIES:
 ${(coachLog ?? []).map((c) => `Q (${Math.round(c.asked_at_ms / 1000)}s): ${c.ask_text}\nA: ${c.reply_transcript ?? "(no recorded reply)"}`).join("\n\n") || "(none)"}
 
-SCREENSHOTS: ${images.length} attached as image blocks below.`;
+SCREENSHOTS: {{IMAGE_COUNT}} attached as image blocks below.`;
 
-    const buildContent = (header: string): unknown[] => {
-      const c: unknown[] = [{ type: "text", text: baseUserPrompt(header) }];
-      for (const img of images) c.push(img);
+    const buildContent = (header: string, imgs: typeof allImages): unknown[] => {
+      const text = baseUserPrompt(header).replace("{{IMAGE_COUNT}}", String(imgs.length));
+      const c: unknown[] = [{ type: "text", text }];
+      for (let i = 0; i < imgs.length; i++) {
+        // Cache-control on the LAST image so the entire user-message prefix
+        // (text + all images) is cacheable as a unit. Subsequent calls with
+        // the same prefix get the 90% discount on these tokens.
+        const isLast = i === imgs.length - 1;
+        c.push(isLast ? { ...imgs[i], cache_control: { type: "ephemeral" } } : imgs[i]);
+      }
       return c;
     };
 
@@ -256,7 +277,7 @@ SCREENSHOTS: ${images.length} attached as image blocks below.`;
       max_tokens: 3500,
       system: SYSTEM,
       temperature: 0.4,
-      messages: [{ role: "user", content: buildContent("Now produce the SKILL.md from these materials.") as any }],
+      messages: [{ role: "user", content: buildContent("Now produce the SKILL.md from these materials.", imagesForSkill) as any }],
     });
     // deno-lint-ignore no-explicit-any
     const improvementCall = callLLM({
@@ -264,7 +285,7 @@ SCREENSHOTS: ${images.length} attached as image blocks below.`;
       max_tokens: 3500,
       system: IMPROVEMENT_SYSTEM,
       temperature: 0.4,
-      messages: [{ role: "user", content: buildContent("Now produce the CHANGE BRIEF from these materials.") as any }],
+      messages: [{ role: "user", content: buildContent("Now produce the CHANGE BRIEF from these materials.", imagesForImprovement) as any }],
     });
     const [skillMd, improvementMd] = await Promise.all([skillCall, improvementCall]);
 
@@ -337,6 +358,27 @@ SCREENSHOTS: ${images.length} attached as image blocks below.`;
     return json({ error: String((err as Error).message) }, 500);
   }
 });
+
+// Heuristic: do click events carry enough text signal that an LLM can
+// reason about the workflow without screenshots? "Strong" = at least 70%
+// of click events have a non-empty visibleText OR a CSS selector that
+// references something semantic (id/data-test/aria-label). Falls back
+// to including images when in doubt.
+function eventsHaveStrongTextSignal(
+  events: Array<{ kind: string; data: Record<string, unknown> }>,
+): boolean {
+  const clicks = events.filter((e) => e.kind === "click");
+  if (clicks.length < 3) return false; // tiny recording, attach images for context
+  let strong = 0;
+  for (const e of clicks) {
+    const tgt = (e.data?.target as { selector?: string; visibleText?: string } | undefined);
+    const text = tgt?.visibleText?.trim() ?? "";
+    const sel = tgt?.selector ?? "";
+    const semantic = /\[(data-test|aria-label|id)=|#[a-z]/i.test(sel);
+    if (text.length > 1 || semantic) strong++;
+  }
+  return strong / clicks.length >= 0.7;
+}
 
 // Sample first, last, one per "major UI state" (URL change held >5s), and any
 // screenshot at a coach-ask moment. Cap at 12.
