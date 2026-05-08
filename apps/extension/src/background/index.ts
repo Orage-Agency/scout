@@ -589,6 +589,8 @@ async function runCoachCycle(): Promise<void> {
         events: recentEvents,
         transcript_tail: state.live_transcript_tail ?? "",
         ask_count: state.ask_count,
+        current_url: state.active_tab_url ?? null,
+        current_title: state.active_tab_title ?? null,
       }),
     });
     if (!res.ok) {

@@ -35,6 +35,8 @@ interface CoachReq {
   events: Array<{ kind: string; ts_ms: number; data: Record<string, unknown> }>;
   transcript_tail?: string;
   ask_count?: number;
+  current_url?: string | null;
+  current_title?: string | null;
 }
 
 function summarizeCoachEvents(
@@ -81,9 +83,16 @@ Deno.serve(async (req) => {
     if ((body.ask_count ?? 0) >= 6) return json({ ask: null });
 
     const eventSummary = summarizeCoachEvents(body.events);
+    let pageContext = "";
+    if (body.current_url) {
+      try {
+        const u = new URL(body.current_url);
+        pageContext = `\nCurrent page: ${u.hostname}${u.pathname.length > 48 ? u.pathname.slice(0, 45) + "…" : u.pathname}${body.current_title ? ` ("${body.current_title.slice(0, 60)}")` : ""}`;
+      } catch { pageContext = `\nCurrent page: ${body.current_url.slice(0, 80)}`; }
+    }
     const userMsg = `Recent actions (last 30s):
 ${eventSummary}
-
+${pageContext}
 Recent narration: ${body.transcript_tail || "(none)"}
 Questions asked so far: ${body.ask_count ?? 0}`;
 
