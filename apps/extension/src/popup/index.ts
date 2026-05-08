@@ -651,7 +651,8 @@ function renderCards(container: HTMLElement, rows: Array<RecordingRow & { skills
         </div>
         <span class="${statusCls}" style="font-family:'Bebas Neue',sans-serif;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;flex-shrink:0;">${r.status}</span>
       </div>
-      ${!hasSkill && r.status !== "failed" ? `<div class="text-[10px] mt-2" style="color:rgba(255,232,199,0.28);font-style:italic;">Generating…</div>` : ""}
+      ${r.status === "failed" ? `<div class="text-[10px] mt-2" style="color:rgba(248,113,113,0.60);">Generation failed — open to retry</div>` : ""}
+      ${!hasSkill && r.status !== "failed" && r.status !== "recording" ? `<div class="text-[10px] mt-2" style="color:rgba(255,232,199,0.28);font-style:italic;">Generating…</div>` : ""}
     `;
 
     card.onclick = () => {
@@ -1236,14 +1237,33 @@ function skillView(
   topRow.className = "flex items-start justify-between gap-2 mb-3";
   topRow.innerHTML = `
     <button id="back" class="btn btn-ghost" style="padding:5px 8px;font-size:11px;">← Library</button>
-    <div class="text-right">
+    <div class="flex items-center gap-2">
       <span class="${statusColor(rec.status)}" style="font-family:'Bebas Neue',sans-serif;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;">${rec.status}</span>
+      <button id="del-rec" class="btn btn-ghost" style="padding:4px 7px;font-size:10px;color:rgba(248,113,113,0.65);" title="Delete recording">✕</button>
     </div>
   `;
   topRow.querySelector<HTMLButtonElement>("#back")!.onclick = () => {
     void chrome.storage.local.remove(RECENT_KEY);
     view = { kind: "idle", tab: "library" };
     render();
+  };
+  topRow.querySelector<HTMLButtonElement>("#del-rec")!.onclick = async () => {
+    if (!confirm(`Delete "${rec.title || "this recording"}" and all its skills? This cannot be undone.`)) return;
+    const btn = topRow.querySelector<HTMLButtonElement>("#del-rec")!;
+    btn.disabled = true;
+    btn.textContent = "…";
+    try {
+      const db = getDataSupabase();
+      const { error } = await db.from("recordings").delete().eq("id", rec.id);
+      if (error) throw new Error(error.message);
+      await chrome.storage.local.remove(RECENT_KEY);
+      view = { kind: "idle", tab: "library" };
+      render();
+    } catch (e) {
+      alert(`Delete failed: ${(e as Error).message}`);
+      btn.disabled = false;
+      btn.textContent = "✕";
+    }
   };
   d.appendChild(topRow);
 
