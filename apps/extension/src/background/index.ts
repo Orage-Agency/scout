@@ -50,7 +50,7 @@ async function saveSession(s: RecordingSessionState | null): Promise<void> {
 
 // ---- Recording lifecycle ----
 
-async function startRecording(micEnabled = true): Promise<RecordingSessionState | null> {
+async function startRecording(micEnabled: boolean): Promise<RecordingSessionState | null> {
   const authClient = getAuthSupabase();
   const db = getDataSupabase();
   const { data: auth } = await authClient.auth.getUser();
@@ -85,7 +85,11 @@ async function startRecording(micEnabled = true): Promise<RecordingSessionState 
     started_at: startedAtMs,
     paused_ms: 0,
     is_paused: false,
-    audio_supported: micEnabled, // false if user disabled voice narration
+    // audio_supported = browser/OS capability (flipped to false on
+    // offscreen:audio_error if getUserMedia is denied). mic_enabled =
+    // user intent (the Voice narration toggle). Two distinct states so
+    // the popup can show "off" vs "denied" correctly.
+    audio_supported: true,
     mic_enabled: micEnabled,
     ask_count: 0,
     last_ask_at: 0,
@@ -158,6 +162,10 @@ async function stopRecording(): Promise<void> {
       })
       .eq("id", state.recording_id);
     broadcastRecordingChanged(state.recording_id, "ready");
+    // Defensive: in case an offscreen document was opened by a race
+    // (e.g. the user toggled mic mid-recording in a future build), make
+    // sure it's closed so the mic + the offscreen page don't leak.
+    await closeOffscreen();
     await saveSession(null);
     await chrome.runtime.sendMessage({ type: "popup:state", state: null }).catch(() => {});
     console.log("[scout] recording stopped (no audio)", state.recording_id);
@@ -783,7 +791,9 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse)
     try {
       switch (msg.type) {
         case "popup:start_recording": {
-          const state = await startRecording(msg.mic_enabled ?? true);
+          // mic_enabled is required from the popup; if missing we default
+          // to opt-out (false) — never silently capture audio.
+          const state = await startRecording(msg.mic_enabled ?? false);
           sendResponse({ state });
           break;
         }

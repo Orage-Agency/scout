@@ -13,6 +13,7 @@ type View =
   | { kind: "recording"; state: RecordingSessionState }
   // Single transitional state covering everything between Stop and Skill-Ready.
   // The popup shows a single staged progress UI; the user does nothing.
+  | { kind: "extra_context"; recording: RecordingRow }
   | { kind: "processing"; recording: RecordingRow; stage: "uploading" | "transcribing" | "drafting"; error?: string }
   | { kind: "skill"; recording: RecordingRow; skill: SkillRow | null; allSkills?: SkillRow[]; autoDownloaded?: boolean };
 
@@ -47,10 +48,11 @@ async function init(): Promise<void> {
   try {
     auth = getAuthSupabase();
     db = getDataSupabase();
-  } catch {
+  } catch (e) {
     // Supabase env vars not baked in at build time — show the sign-in form so
     // the popup is at least renderable (smoke tests, dev without .env, etc.).
     // Submitting will surface the config error via the form's error element.
+    console.warn("[scout] supabase env not configured, falling back to signed-out view", e);
     view = { kind: "signed_out", mode: "signin" };
     render();
     return;
@@ -126,6 +128,10 @@ function render(): void {
       wrap.appendChild(header(null));
       wrap.appendChild(recordingView(view.state));
       break;
+    case "extra_context":
+      wrap.appendChild(header(null));
+      wrap.appendChild(extraContextView(view.recording));
+      break;
     case "processing":
       wrap.appendChild(header(null));
       wrap.appendChild(processingView(view.recording, view.stage, view.error));
@@ -146,7 +152,7 @@ function header(active: "record" | "library" | "settings" | null): HTMLElement {
   h.innerHTML = `
     <div class="flex items-baseline gap-3">
       <span class="display text-[28px]" style="color:#E4AF7A;">SCOUT</span>
-      <span class="label" style="font-size:9px;">v0.1.4 · Orage AI</span>
+      <span class="label" style="font-size:9px;">v0.1.7 · Orage AI</span>
     </div>
     <div class="divider-gold"></div>
   `;
@@ -483,15 +489,16 @@ function recordingView(s: RecordingSessionState): HTMLElement {
     const recordingId = s.recording_id;
     // Persist so re-opening the popup picks up where we left off.
     await chrome.storage.local.set({ [RECENT_KEY]: recordingId });
-    await chrome.runtime.sendMessage({ type: "popup:stop_recording" } satisfies RuntimeMessage);
+    // Fire-and-forget the stop message — the mic releases immediately on the
+    // background side. Jump straight to "any other thoughts?" so upload +
+    // transcribe run in the background while the user (optionally) adds
+    // context. The user is never staring at a blank wait.
+    void chrome.runtime.sendMessage({ type: "popup:stop_recording" } satisfies RuntimeMessage);
     const db = getDataSupabase();
     const { data: rec } = await db.from("recordings").select("*").eq("id", recordingId).single();
     if (rec) {
-      // When mic is disabled, stop() goes straight to 'ready' — skip uploading/transcribing stages.
-      const initialStage = (rec as RecordingRow).status === "ready" ? "drafting" : "uploading";
-      view = { kind: "processing", recording: rec as RecordingRow, stage: initialStage };
+      view = { kind: "extra_context", recording: rec as RecordingRow };
       render();
-      void runAutoGenerate(rec as RecordingRow);
     } else {
       view = { kind: "idle", tab: "library" };
       render();
@@ -500,9 +507,54 @@ function recordingView(s: RecordingSessionState): HTMLElement {
   return d;
 }
 
+// One last prompt before we kick off skill generation: "any other thoughts?"
+// The user can either skip and let the agent work from events + narration
+// alone, or paste a few lines explaining the WHY behind a non-obvious step.
+// That extra text is forwarded to /generate-skill via the `extra` param.
+function extraContextView(rec: RecordingRow): HTMLElement {
+  const d = document.createElement("div");
+  d.className = "flex-1 px-5 py-5 flex flex-col gap-3";
+  const dur = rec.duration_ms ? `${Math.round(rec.duration_ms / 1000)}s recording` : "Recording";
+  d.innerHTML = `
+    <div class="glass p-4 flex flex-col gap-3">
+      <div class="display text-[16px]" style="color:#E4AF7A;">Any other thoughts?</div>
+      <div class="text-[12px] leading-relaxed" style="color:rgba(255,232,199,0.65);">
+        ${escapeHtml(dur)} captured. If a step worked a specific way for a reason —
+        a rule, an exception, why option A vs B — drop a note here so the
+        skill captures it. Optional.
+      </div>
+      <textarea id="ec" rows="5" placeholder="e.g. We always pick the earliest delivery date if the customer is in California — Prop 65 thing." style="resize:vertical;min-height:90px;"></textarea>
+      <div class="flex gap-2">
+        <button id="ec-skip" class="btn flex-1">Skip</button>
+        <button id="ec-save" class="btn btn-primary flex-1">Save & generate</button>
+      </div>
+      <div class="text-[10px] leading-relaxed" style="color:rgba(255,232,199,0.45);">
+        Upload + transcription is already running in the background. Your note is woven into the skill alongside the recording.
+      </div>
+    </div>
+  `;
+  const ta = d.querySelector<HTMLTextAreaElement>("#ec")!;
+  const skip = d.querySelector<HTMLButtonElement>("#ec-skip")!;
+  const save = d.querySelector<HTMLButtonElement>("#ec-save")!;
+  const proceed = (extra?: string) => {
+    view = { kind: "processing", recording: rec, stage: "uploading" };
+    render();
+    void runAutoGenerate(rec, extra);
+  };
+  skip.onclick = () => proceed(undefined);
+  save.onclick = () => proceed(ta.value.trim() || undefined);
+  // Cmd/Ctrl+Enter shortcut for keyboard users.
+  ta.onkeydown = (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") proceed(ta.value.trim() || undefined);
+  };
+  // Autofocus so the user can start typing immediately.
+  setTimeout(() => ta.focus(), 50);
+  return d;
+}
+
 // Auto-generate flow: poll the recording row through its statuses, then call
 // /generate-skill. Updates the popup's stage label as we go.
-async function runAutoGenerate(rec: RecordingRow): Promise<void> {
+async function runAutoGenerate(rec: RecordingRow, extra?: string): Promise<void> {
   const auth = getAuthSupabase();
   const db = getDataSupabase();
   const deadline = Date.now() + 180_000;
@@ -535,7 +587,7 @@ async function runAutoGenerate(rec: RecordingRow): Promise<void> {
         "content-type": "application/json",
         authorization: `Bearer ${sess.session?.access_token ?? ""}`,
       },
-      body: JSON.stringify({ recording_id: rec.id }),
+      body: JSON.stringify({ recording_id: rec.id, extra }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
     const skill = (await res.json()) as SkillRow;
