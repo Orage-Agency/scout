@@ -161,6 +161,11 @@ function render(): void {
     case "skill":
       wrap.appendChild(header(null));
       wrap.appendChild(skillView(view.recording, view.skill, view.allSkills, view.autoDownloaded));
+      // Defensive: if the chosen skill row was loaded from a partial SELECT
+      // (no body_md), refetch the full row in the background and re-render.
+      if (view.skill && !view.skill.body_md && view.skill.id) {
+        void hydrateSkill(view.skill.id);
+      }
       break;
   }
   root.appendChild(wrap);
@@ -174,7 +179,7 @@ function header(active: "record" | "library" | "settings" | null): HTMLElement {
   h.innerHTML = `
     <div class="flex items-baseline gap-3">
       <span class="display text-[28px]" style="color:#E4AF7A;">SCOUT</span>
-      <span class="label" style="font-size:9px;">v0.1.11 · Orage AI</span>
+      <span class="label" style="font-size:9px;">v0.1.12 · Orage AI</span>
     </div>
     <div class="divider-gold"></div>
   `;
@@ -408,7 +413,7 @@ async function loadLibrary(container: HTMLDivElement): Promise<void> {
   }
   let query = db
     .from("recordings")
-    .select("*, skills(id,version,title,created_at)")
+    .select("*, skills(id,recording_id,user_id,version,title,body_md,kind,prompt_used,created_at)")
     .order("started_at", { ascending: false })
     .limit(50);
   if (!isAdmin()) query = query.eq("user_id", userId);
@@ -1143,6 +1148,20 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage) => {
     }
   }
 });
+
+// Lazy refetch of a full skill row when the library handed us a metadata-
+// only stub. Updates the view in place so the user never sees an empty
+// brief / skill view because of a thin SELECT.
+async function hydrateSkill(skillId: string): Promise<void> {
+  if (view.kind !== "skill") return;
+  const db = getDataSupabase();
+  const { data: full } = await db.from("skills").select("*").eq("id", skillId).single();
+  if (!full || view.kind !== "skill" || view.skill?.id !== skillId) return;
+  if (full.body_md && full.body_md !== view.skill.body_md) {
+    view = { ...view, skill: full as SkillRow };
+    render();
+  }
+}
 
 async function refreshSkillView(recordingId: string): Promise<void> {
   const db = getDataSupabase();
