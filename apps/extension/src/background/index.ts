@@ -965,6 +965,9 @@ chrome.commands.onCommand.addListener((command) => {
 });
 
 // On worker wake, restore badge state and restart timers if recording is active.
+// If no session in storage (browser restarted), auto-fail any recordings this
+// user left stuck in "recording" status — prevents the library showing a
+// perpetual spinner on orphaned rows.
 (async () => {
   const state = await loadSession();
   if (state && !state.is_paused) {
@@ -973,5 +976,30 @@ chrome.commands.onCommand.addListener((command) => {
     chrome.action.setBadgeBackgroundColor({ color: "#DC2626" });
   } else if (!state) {
     chrome.action.setBadgeText({ text: "" });
+    void failStaleRecordings();
   }
 })();
+
+async function failStaleRecordings(): Promise<void> {
+  try {
+    const authClient = getAuthSupabase();
+    const db = getDataSupabase();
+    const { data: auth } = await authClient.auth.getUser();
+    if (!auth.user) return;
+    // Any recording stuck in "recording" status for > 5 minutes is orphaned.
+    const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { data: stale } = await db
+      .from("recordings")
+      .select("id")
+      .eq("user_id", auth.user.id)
+      .eq("status", "recording")
+      .lt("started_at", cutoff);
+    if (!stale?.length) return;
+    const ids = stale.map((r: { id: string }) => r.id);
+    await db.from("recordings").update({ status: "failed" }).in("id", ids);
+    for (const id of ids) broadcastRecordingChanged(id, "failed");
+    console.log("[scout] auto-failed stale recordings", ids);
+  } catch (err) {
+    console.warn("[scout] failStaleRecordings error", err);
+  }
+}
