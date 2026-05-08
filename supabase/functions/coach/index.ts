@@ -55,6 +55,10 @@ function summarizeCoachEvents(
       let displayUrl = rawUrl;
       try { const u = new URL(rawUrl); displayUrl = u.hostname + (u.pathname.length > 40 ? u.pathname.slice(0, 37) + "…" : u.pathname); } catch { /* not a URL */ }
       lines.push(`${t} navigate: ${displayUrl}`);
+    } else if (e.kind === "select_change") {
+      lines.push(`${t} select: "${e.data.selected_text}"`);
+    } else if (e.kind === "checkbox_change") {
+      lines.push(`${t} ${e.data.checked ? "checked" : "unchecked"}: ${e.data.value ?? ""}`);
     } else {
       lines.push(`${t} ${e.kind}`);
     }

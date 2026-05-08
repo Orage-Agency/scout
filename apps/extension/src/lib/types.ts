@@ -9,6 +9,8 @@ export type EventKind =
   | "tab_switch"
   | "scroll"
   | "focus_change"
+  | "select_change"
+  | "checkbox_change"
   | "tab_closed"
   | "screenshot_failed"
   | "coach_reply";

@@ -91,6 +91,27 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     { capture: true, passive: true }
   );
 
+  // Dropdown selections and checkbox/radio toggles — not captured by mousedown.
+  document.addEventListener(
+    "change",
+    (e) => {
+      const t = e.target as HTMLInputElement | HTMLSelectElement | null;
+      if (!t || isOurOwnUi(t)) return;
+      const tag = t.tagName.toLowerCase();
+      const sel = buildSelector(t);
+      if (tag === "select") {
+        const opt = (t as HTMLSelectElement).options[(t as HTMLSelectElement).selectedIndex];
+        post("select_change", { selected_text: opt?.text ?? "", value: t.value, target: sel });
+      } else if (tag === "input") {
+        const inp = t as HTMLInputElement;
+        if (inp.type === "checkbox" || inp.type === "radio") {
+          post("checkbox_change", { checked: inp.checked, value: inp.value, target: sel });
+        }
+      }
+    },
+    { capture: true, passive: true }
+  );
+
   // Scroll, debounced.
   let scrollTimer: number | null = null;
   let scrollY0 = window.scrollY;

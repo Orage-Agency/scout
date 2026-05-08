@@ -493,6 +493,12 @@ function summarizeEvents(events: Array<{ ts_ms: number; kind: string; data: Reco
     } else if (e.kind === "tab_switch") {
       flushTyping();
       lines.push(`${ts} tab_switch -> ${truncateUrl(String((e.data as Record<string, unknown>).to_tab_url ?? ""))}`);
+    } else if (e.kind === "select_change") {
+      flushTyping();
+      lines.push(`${ts} select "${(e.data as Record<string, unknown>).selected_text}"`);
+    } else if (e.kind === "checkbox_change") {
+      const d = e.data as Record<string, unknown>;
+      lines.push(`${ts} ${d.checked ? "checked" : "unchecked"} ${(d.target as { visibleText?: string } | undefined)?.visibleText ?? String(d.value ?? "")}`);
     } else {
       flushTyping();
       lines.push(`${ts} ${e.kind}`);
