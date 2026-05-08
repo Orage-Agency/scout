@@ -505,6 +505,10 @@ function summarizeEvents(events: Array<{ ts_ms: number; kind: string; data: Reco
       const label = (d.field as { selector?: string; visibleText?: string } | undefined)?.visibleText
         ?? (d.field as { selector?: string } | undefined)?.selector ?? "field";
       lines.push(`${ts} fill "${label}" = "${String(d.value ?? "").slice(0, 60)}"`);
+    } else if (e.kind === "copy") {
+      flushTyping();
+      const snippet = String((e.data as Record<string, unknown>).content_snippet ?? "").slice(0, 60);
+      lines.push(snippet ? `${ts} copy "${snippet}"` : `${ts} copy`);
     } else if (e.kind === "coach_reply") {
       flushTyping();
       lines.push(`${ts} [coach reply]: "${String((e.data as Record<string, unknown>).reply_text ?? "").slice(0, 100)}"`);
@@ -512,13 +516,18 @@ function summarizeEvents(events: Array<{ ts_ms: number; kind: string; data: Reco
       flushTyping();
       lines.push(`${ts} ${e.kind}`);
     }
-    if (lines.length > 200) {
-      lines.push("…(truncated for prompt)");
-      break;
-    }
   }
   flushTyping();
-  return lines.join("\n");
+
+  // Smart truncation: keep first 40 + last 40 + evenly sample the middle.
+  // Preserves workflow start/end (highest signal) without hard cutoff.
+  if (lines.length <= 250) return lines.join("\n");
+  const head = lines.slice(0, 40);
+  const tail = lines.slice(-40);
+  const middle = lines.slice(40, -40);
+  const stride = Math.ceil(middle.length / 170);
+  const sampled = middle.filter((_, i) => i % stride === 0);
+  return [...head, `…(${middle.length - sampled.length} events sampled)…`, ...sampled, ...tail].join("\n");
 }
 
 function truncateUrl(url: string): string {

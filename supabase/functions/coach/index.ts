@@ -65,6 +65,9 @@ function summarizeCoachEvents(
       const label = (e.data.field as { visibleText?: string; selector?: string } | undefined)?.visibleText
         ?? (e.data.field as { selector?: string } | undefined)?.selector ?? "field";
       lines.push(`${t} fill "${label}" = "${String(e.data.value ?? "").slice(0, 60)}"`);
+    } else if (e.kind === "copy") {
+      const snippet = String(e.data.content_snippet ?? "").slice(0, 60);
+      lines.push(snippet ? `${t} copy: "${snippet}"` : `${t} copy`);
     } else if (e.kind === "coach_reply") {
       lines.push(`${t} [user replied]: "${String(e.data.reply_text ?? "").slice(0, 100)}"`);
     } else {
