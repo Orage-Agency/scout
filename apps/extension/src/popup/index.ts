@@ -1413,11 +1413,12 @@ function skillView(
     actions.querySelector<HTMLButtonElement>("#refine-btn")!.onclick = () => toggleRefinePanel(d, rec, skill, allSkills);
   } else {
     actions.innerHTML = `
-      <button id="claude" class="btn ${autoDownloaded ? "" : "btn-primary"} w-full">
-        ${autoDownloaded ? "Save again" : "Save as Claude Code skill"}
+      <button id="cc-copy" class="btn btn-primary w-full">Copy for Claude Code — use right now</button>
+      <button id="claude" class="btn w-full text-[12px]">
+        ${autoDownloaded ? "Save .zip again" : "Save as .zip (for ~/.claude/skills/)"}
       </button>
       <div class="grid grid-cols-3 gap-2">
-        <button id="cp" class="btn text-[11px]">Copy</button>
+        <button id="cp" class="btn text-[11px]">Copy raw</button>
         <button id="dl" class="btn text-[11px]">Save .md</button>
         <button id="dryrun" class="btn text-[11px]">Dry run</button>
       </div>
@@ -1427,13 +1428,19 @@ function skillView(
       </div>
       <pre id="dryout" class="text-[10px] hidden whitespace-pre-wrap" style="background:rgba(0,0,0,0.55);padding:10px;border-radius:6px;color:rgba(255,232,199,0.75);max-height:180px;overflow-y:auto;border:1px solid rgba(182,128,57,0.18);"></pre>
     `;
+    actions.querySelector<HTMLButtonElement>("#cc-copy")!.onclick = async () => {
+      await navigator.clipboard.writeText(formatSkillForClaudeCode(skill));
+      const b = actions.querySelector<HTMLButtonElement>("#cc-copy")!;
+      b.textContent = "Copied — paste into Claude Code";
+      setTimeout(() => { b.textContent = "Copy for Claude Code — use right now"; }, 2500);
+    };
     actions.querySelector<HTMLButtonElement>("#claude")!.onclick = () => downloadClaudeSkill(skill);
     actions.querySelector<HTMLButtonElement>("#dl")!.onclick = () => downloadMd(skill);
     actions.querySelector<HTMLButtonElement>("#cp")!.onclick = async () => {
       await navigator.clipboard.writeText(skill.body_md);
       const b = actions.querySelector<HTMLButtonElement>("#cp")!;
       b.textContent = "Copied";
-      setTimeout(() => { b.textContent = "Copy"; }, 1500);
+      setTimeout(() => { b.textContent = "Copy raw"; }, 1500);
     };
     actions.querySelector<HTMLButtonElement>("#edit-btn")!.onclick = (e) => {
       toggleEditor(d, skill, e.currentTarget as HTMLButtonElement);
@@ -1688,6 +1695,19 @@ async function runDryRun(skill: SkillRow, container: HTMLElement): Promise<void>
     btn.disabled = false;
     btn.textContent = "Test in cloud (dry-run)";
   }
+}
+
+function formatSkillForClaudeCode(skill: SkillRow): string {
+  const desc = (skill.body_md.match(/^description:\s*(.+)$/m)?.[1] ?? "this workflow").trim();
+  return `I'm sharing a skill with you so you can use it in this session. Learn it and confirm you understand it.
+
+---
+
+${skill.body_md.trim()}
+
+---
+
+When I ask you to perform tasks matching this skill's description ("${desc}"), follow the steps above.`;
 }
 
 function formatBriefForClaudeCode(skill: SkillRow, _rec: RecordingRow): string {
