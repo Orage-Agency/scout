@@ -1,24 +1,26 @@
-// Single LLM client used by all three Edge Functions. Calls OpenRouter
-// (OpenAI-compatible chat completions). Per-task model is configurable via
+// Single LLM client used by all three Edge Functions. Calls the Anthropic
+// Messages API directly when ANTHROPIC_API_KEY is set; falls back to
+// OpenRouter (OpenAI-compat) otherwise. Per-task model is configurable via
 // env so we can split coach/transcribe/skill across cheap vs. capable models
 // without redeploying code.
 //
 // Set once with:
-//   supabase secrets set OPENROUTER_API_KEY=sk-or-v1-...
+//   supabase secrets set ANTHROPIC_API_KEY=sk-ant-api03-...
+//   (or) supabase secrets set OPENROUTER_API_KEY=sk-or-v1-...
 //
-// Optional overrides (all have defaults):
-//   OPENROUTER_MODEL_COACH       (cheap, fast — coach loop fires every 30s)
-//   OPENROUTER_MODEL_TRANSCRIBE  (must accept audio input)
-//   OPENROUTER_MODEL_SKILL       (vision-capable for screenshots)
-//   OPENROUTER_MODEL             (fallback default for any of the above)
+// Model env overrides (defaults below). Model ids are Anthropic-native
+// (claude-sonnet-4-6, claude-haiku-4-5, etc). The OpenRouter path
+// auto-prefixes "anthropic/" and converts dots to dashes.
 
-const API = "https://openrouter.ai/api/v1/chat/completions";
+const ANTHROPIC_API = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION = "2023-06-01";
+const OPENROUTER_API = "https://openrouter.ai/api/v1/chat/completions";
 
-const DEFAULT_MODEL = Deno.env.get("OPENROUTER_MODEL") ?? "anthropic/claude-sonnet-4.5";
+const DEFAULT_MODEL = Deno.env.get("LLM_MODEL") ?? "claude-sonnet-4-6";
 
-export const MODEL_COACH = Deno.env.get("OPENROUTER_MODEL_COACH") ?? "anthropic/claude-haiku-4.5";
-export const MODEL_TRANSCRIBE = Deno.env.get("OPENROUTER_MODEL_TRANSCRIBE") ?? "google/gemini-2.5-flash";
-export const MODEL_SKILL = Deno.env.get("OPENROUTER_MODEL_SKILL") ?? "anthropic/claude-opus-4.5";
+export const MODEL_COACH = Deno.env.get("LLM_MODEL_COACH") ?? "claude-haiku-4-5";
+export const MODEL_TRANSCRIBE = Deno.env.get("LLM_MODEL_TRANSCRIBE") ?? "claude-sonnet-4-6";
+export const MODEL_SKILL = Deno.env.get("LLM_MODEL_SKILL") ?? "claude-sonnet-4-6";
 
 export interface ContentBlock {
   type: "text" | "image" | "document";
@@ -41,6 +43,65 @@ export interface LLMRequest {
   temperature?: number;
 }
 
+export async function callLLM(req: LLMRequest): Promise<string> {
+  const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
+  if (anthropicKey) return callAnthropic(req, anthropicKey);
+  const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
+  if (openRouterKey) return callOpenRouter(req, openRouterKey);
+  throw new Error("No LLM key configured (ANTHROPIC_API_KEY or OPENROUTER_API_KEY)");
+}
+
+// ---- Anthropic direct ----
+
+async function callAnthropic(req: LLMRequest, key: string): Promise<string> {
+  const body = {
+    model: anthropicModelId(req.model ?? DEFAULT_MODEL),
+    max_tokens: req.max_tokens,
+    temperature: req.temperature,
+    system: req.system,
+    messages: req.messages.map(toAnthropicMessage),
+  };
+  const res = await fetch(ANTHROPIC_API, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": key,
+      "anthropic-version": ANTHROPIC_VERSION,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Anthropic ${res.status}: ${await res.text()}`);
+  const data = await res.json();
+  // Concatenate any text blocks in the response.
+  const blocks = (data.content as Array<{ type: string; text?: string }> | undefined) ?? [];
+  return blocks.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
+}
+
+function toAnthropicMessage(m: LLMMessage): Record<string, unknown> {
+  if (typeof m.content === "string") return { role: m.role, content: m.content };
+  // deno-lint-ignore no-explicit-any
+  const parts: any[] = [];
+  for (const b of m.content) {
+    if (b.type === "text") {
+      parts.push({ type: "text", text: b.text ?? "" });
+    } else if ((b.type === "image" || b.type === "document") && b.source) {
+      // Anthropic expects { type: "image", source: { type: "base64", media_type, data } }
+      // or { type: "image", source: { type: "url", url } }. Pass through as-is
+      // since our ContentBlock.source already matches that shape.
+      parts.push({ type: "image", source: b.source });
+    }
+  }
+  return { role: m.role, content: parts };
+}
+
+// Anthropic uses dashes everywhere ("claude-sonnet-4-6"). Strip OpenRouter
+// "anthropic/" prefix and convert dotted minor versions ("4.6" → "4-6").
+function anthropicModelId(id: string): string {
+  return id.replace(/^anthropic\//, "").replace(/(\d)\.(\d)/g, "$1-$2");
+}
+
+// ---- OpenRouter (legacy fallback) ----
+
 // deno-lint-ignore no-explicit-any
 type OpenAIPart = any;
 
@@ -57,9 +118,6 @@ function toOpenAIMessages(req: LLMRequest): OpenAIPart[] {
       if (b.type === "text") {
         parts.push({ type: "text", text: b.text ?? "" });
       } else if ((b.type === "image" || b.type === "document") && b.source) {
-        // Both images and audio go through image_url with a data URL — this
-        // is how OpenRouter's OpenAI-compat layer routes binary inputs to the
-        // underlying model (Gemini accepts audio/* MIME types this way).
         const url = b.source.type === "base64"
           ? `data:${b.source.media_type};base64,${b.source.data}`
           : b.source.url;
@@ -71,18 +129,14 @@ function toOpenAIMessages(req: LLMRequest): OpenAIPart[] {
   return out;
 }
 
-export async function callLLM(req: LLMRequest): Promise<string> {
-  const key = Deno.env.get("OPENROUTER_API_KEY");
-  if (!key) throw new Error("OPENROUTER_API_KEY not set");
-
+async function callOpenRouter(req: LLMRequest, key: string): Promise<string> {
   const body = JSON.stringify({
-    model: req.model ?? DEFAULT_MODEL,
+    model: openRouterModelId(req.model ?? DEFAULT_MODEL),
     messages: toOpenAIMessages(req),
     max_tokens: req.max_tokens,
     temperature: req.temperature,
   });
-
-  const res = await fetch(API, {
+  const res = await fetch(OPENROUTER_API, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -92,12 +146,18 @@ export async function callLLM(req: LLMRequest): Promise<string> {
     },
     body,
   });
-
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`OpenRouter ${res.status}: ${txt}`);
-  }
-
+  if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${await res.text()}`);
   const data = await res.json();
   return data.choices?.[0]?.message?.content ?? "";
+}
+
+// OpenRouter expects "anthropic/claude-sonnet-4.6" (dot-version, namespaced).
+// Convert from Anthropic-native "claude-sonnet-4-6" if needed.
+function openRouterModelId(id: string): string {
+  if (id.includes("/")) return id;  // already namespaced
+  // Heuristic: claude-* → anthropic/<id-with-dot>. Convert last two
+  // hyphenated digits back to dotted form (sonnet-4-6 → sonnet-4.6).
+  const dotted = id.replace(/(\d)-(\d)$/, "$1.$2");
+  if (id.startsWith("claude-")) return `anthropic/${dotted}`;
+  return dotted;
 }
