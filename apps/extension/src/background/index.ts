@@ -812,6 +812,35 @@ chrome.webNavigation?.onCompleted?.addListener(async (details) => {
   });
 });
 
+// SPA navigation — SPAs (React Router, Next.js, Vue Router) update the URL
+// via history.pushState without a full page load, so onCompleted never fires.
+// onHistoryStateUpdated catches those transitions. Debounced to 500ms to skip
+// rapid sequential pushState calls (e.g., scroll-driven URL updates).
+let historyNavTimer: ReturnType<typeof setTimeout> | null = null;
+let lastHistoryUrl: string | null = null;
+chrome.webNavigation?.onHistoryStateUpdated?.addListener((details) => {
+  if (details.frameId !== 0) return;
+  if (details.url === lastHistoryUrl) return; // same URL — no meaningful nav
+  lastHistoryUrl = details.url;
+  if (historyNavTimer) clearTimeout(historyNavTimer);
+  historyNavTimer = setTimeout(() => {
+    historyNavTimer = null;
+    void (async () => {
+      const state = await loadSession();
+      if (!state || state.is_paused) return;
+      const tab = await chrome.tabs.get(details.tabId).catch(() => null);
+      await captureTabAndQueue(details.tabId, tab?.windowId ?? null, "navigation", {
+        to_url: details.url,
+        spa: true,
+      });
+      state.active_tab_url = details.url;
+      if (tab?.title) state.active_tab_title = tab.title;
+      await saveSession(state);
+      chrome.runtime.sendMessage({ type: "popup:state", state } satisfies RuntimeMessage).catch(() => {});
+    })();
+  }, 500);
+});
+
 // ---- Message router ----
 
 // Programmatically inject the content script into every regular tab so
