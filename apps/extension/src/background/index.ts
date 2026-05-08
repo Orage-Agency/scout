@@ -114,6 +114,8 @@ async function startRecording(
   }
 
   await broadcastToTabs({ type: "content:show_control_bar" });
+  chrome.action.setBadgeText({ text: "REC" });
+  chrome.action.setBadgeBackgroundColor({ color: "#DC2626" });
 
   // Reset per-recording capture state so failures and rate limits don't carry
   // across sessions.
@@ -147,6 +149,7 @@ async function stopRecording(): Promise<void> {
 
   stopTimers();
   await broadcastToTabs({ type: "content:hide_control_bar" });
+  chrome.action.setBadgeText({ text: "" });
   await flushBuffer();
 
   // Serialize the audio finalize so onAudioDone runs to completion BEFORE we
@@ -948,8 +951,14 @@ chrome.commands.onCommand.addListener((command) => {
   })();
 });
 
-// On worker wake, if a recording is in-flight, restart timers.
+// On worker wake, restore badge state and restart timers if recording is active.
 (async () => {
   const state = await loadSession();
-  if (state && !state.is_paused) startTimers();
+  if (state && !state.is_paused) {
+    startTimers();
+    chrome.action.setBadgeText({ text: "REC" });
+    chrome.action.setBadgeBackgroundColor({ color: "#DC2626" });
+  } else if (!state) {
+    chrome.action.setBadgeText({ text: "" });
+  }
 })();

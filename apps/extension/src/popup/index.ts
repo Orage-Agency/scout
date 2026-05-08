@@ -767,7 +767,10 @@ function recordingView(s: RecordingSessionState): HTMLElement {
       <button id="stop" class="btn btn-primary flex-1">Stop</button>
     </div>
 
-    <p class="text-[11px] leading-relaxed text-center" style="color:rgba(255,232,199,0.35);">Switch tabs freely — the floating bar follows you.</p>
+    <div class="glass p-3" style="min-height:52px;">
+      <div class="label mb-1" style="font-size:8px;">Tip</div>
+      <div id="tip-text" class="text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.55);transition:opacity 0.4s;"></div>
+    </div>
   `;
 
   // Show saved tier
@@ -790,6 +793,38 @@ function recordingView(s: RecordingSessionState): HTMLElement {
     if (!d.isConnected) { clearInterval(timerInterval); observer.disconnect(); }
   });
   observer.observe(root, { childList: true, subtree: true });
+
+  // Rotating narration tips
+  const TIPS = [
+    "Say what you're doing as you do it — \"I'm clicking Add to move this to my queue\".",
+    "Mention the why, not just the what — \"We always skip this field for EU contacts\".",
+    "Note exceptions as you see them — \"If it's red, that means it needs approval first\".",
+    "Name the fields you fill in — \"Entering the lead email, always lowercase\".",
+    "Call out decision points — \"Here I check if the total is over $500 before proceeding\".",
+    "Switch tabs freely — the gold border and timer follow you everywhere.",
+    "Alt+Shift+R to stop recording without reopening the popup.",
+  ];
+  let tipIdx = 0;
+  const tipEl = d.querySelector<HTMLDivElement>("#tip-text");
+  const rotateTip = () => {
+    if (!tipEl || !d.isConnected) return;
+    tipEl.style.opacity = "0";
+    setTimeout(() => {
+      if (!d.isConnected) return;
+      tipEl.textContent = TIPS[tipIdx % TIPS.length];
+      tipEl.style.opacity = "1";
+      tipIdx++;
+    }, 400);
+  };
+  if (tipEl) {
+    tipEl.textContent = TIPS[0];
+    tipIdx = 1;
+    const tipInterval = setInterval(rotateTip, 8000);
+    const tipObserver = new MutationObserver(() => {
+      if (!d.isConnected) { clearInterval(tipInterval); tipObserver.disconnect(); }
+    });
+    tipObserver.observe(root, { childList: true, subtree: true });
+  }
 
   d.querySelector<HTMLButtonElement>("#pause")!.onclick = async () => {
     const t = s.is_paused ? "popup:resume_recording" : "popup:pause_recording";
