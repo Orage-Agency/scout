@@ -103,6 +103,77 @@ If not seen, write 'None observed.'>
 ## Done when
 <How the agent knows the task succeeded.>`;
 
+// Used when recording.mode === 'improvement'. Output is a paste-ready brief
+// for Claude Code, not a SKILL.md. The user is critiquing an app they're
+// looking at — the brief lists what's wrong, where, and how to fix it.
+const IMPROVEMENT_SYSTEM = `You will produce a CHANGE BRIEF from a recorded
+critique of an app. The user walked through their own app and pointed out
+what they want changed: a broken layout, a confusing label, a feature that
+should exist, a bug. The brief is written for Claude Code to read and
+execute — paste-ready, no preamble.
+
+Output structure (markdown only, no preamble, no fences around the whole
+document):
+
+---
+kind: improvement
+version: 1
+description: <one sentence describing what should change overall>
+---
+
+# <Short, action-oriented title — e.g. "Fix mobile layout on /pricing">
+
+## What's broken
+<1-3 sentences. State the issue exactly as the user described it. Quote the
+narration where helpful: "user said: ..."  Be concrete. No fluff.>
+
+## Where to look
+- **URL observed:** <full URL captured from the recording>
+- **Element:** <visible text or selector — pull from the recorded clicks>
+- **Likely file (best guess):** <Based on the URL path + framework hints in
+  the screenshots, guess the file path. e.g. "/pricing → src/app/pricing/page.tsx
+  in Next.js App Router". If you can't tell, write "unknown — search the repo
+  for the visible string '<text>'.">
+
+## Current behavior
+<What's happening now, captured from the events + screenshots. One short
+paragraph or bulleted list.>
+
+## Desired behavior
+<What the user said it should do. Take this from the narration.>
+
+## Suggested change
+<This is the most important section. Give Claude Code something concrete:
+
+  Option A — when you can infer code: emit a fenced code block in the
+  language you'd expect to find in that file (tsx, ts, css, sql, etc.).
+  Mark each change with a clear "before" and "after" if it's a small edit.
+
+  Option B — when you can't infer code: emit a precise instruction Claude
+  Code can follow, e.g. "In <likely file>, locate the <ComponentName>
+  component and change <prop> from X to Y. Make sure <related thing> is
+  updated too."
+
+  Either way: name files, name functions, name variables. Never write
+  vague stuff like "improve the styling".>
+
+## Acceptance criteria
+- [ ] <Specific, observable bullet — what does success look like?>
+- [ ] <Edge case to confirm.>
+
+## Open questions
+<Anything you're unsure about that Claude Code should ask the human before
+acting. If nothing, write "None.">
+
+CRITICAL rules:
+ - The user is showing you their OWN app. Trust their narration as the
+   source of truth.
+ - Always anchor on the recorded URL and visible text — those are the
+   strongest signals about which file holds the relevant code.
+ - Do NOT embed image references like ![](shot.png). The brief is
+   text-only; screenshots are attached separately for your reference.
+ - Output ONLY the markdown brief. No preamble, no "Here is your brief:".`;
+
 interface GenReq {
   recording_id: string;
   extra?: string;
@@ -156,7 +227,12 @@ Deno.serve(async (req) => {
       .map((s: { start_ms: number; text: string }) => `[${Math.round(s.start_ms / 1000)}s] ${s.text}`)
       .join("\n");
 
-    const userPrompt = `Now produce the SKILL.md from these materials.${extra ? `\nExtra guidance from the user: ${extra}` : ""}
+    const isImprovement = rec.mode === "improvement";
+    const systemPrompt = isImprovement ? IMPROVEMENT_SYSTEM : SYSTEM;
+    const headerLine = isImprovement
+      ? "Now produce the CHANGE BRIEF from these materials."
+      : "Now produce the SKILL.md from these materials.";
+    const userPrompt = `${headerLine}${extra ? `\nExtra guidance from the user: ${extra}` : ""}
 
 EVENTS (${events?.length ?? 0} total, summarized):
 ${summarizeEvents(events ?? [])}
@@ -176,7 +252,7 @@ SCREENSHOTS: ${images.length} attached as image blocks below.`;
     const md = await callLLM({
       model: MODEL_SKILL,
       max_tokens: 3500,
-      system: SYSTEM,
+      system: systemPrompt,
       temperature: 0.4,
       messages: [{ role: "user", content: content as any }],
     });
@@ -202,7 +278,8 @@ SCREENSHOTS: ${images.length} attached as image blocks below.`;
         version,
         title,
         body_md: md,
-        prompt_used: SYSTEM,
+        kind: isImprovement ? "improvement" : "skill",
+        prompt_used: systemPrompt,
       })
       .select("*")
       .single();

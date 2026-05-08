@@ -44,6 +44,7 @@ export interface RecordingSessionState {
   is_paused: boolean;
   audio_supported: boolean;
   mic_enabled: boolean;  // user opted in to voice narration
+  mode: "skill" | "improvement"; // skill = workflow capture, improvement = critique brief
   ask_count: number;
   last_ask_at: number; // epoch ms; 0 if no ask yet
   event_count: number; // live counter for popup display
@@ -60,6 +61,7 @@ export interface RecordingRow {
   id: string;
   user_id: string;
   title: string | null;
+  mode?: "skill" | "improvement";
   status: "recording" | "uploading" | "transcribing" | "ready" | "failed";
   started_at: string;
   ended_at: string | null;
@@ -89,11 +91,12 @@ export interface SkillRow {
   body_md: string;
   prompt_used: string | null;
   created_at: string;
+  kind?: "skill" | "improvement";
 }
 
 // Service-worker ↔ popup ↔ content-script ↔ offscreen messages.
 export type RuntimeMessage =
-  | { type: "popup:start_recording"; mic_enabled?: boolean }
+  | { type: "popup:start_recording"; mic_enabled?: boolean; mode?: "skill" | "improvement" }
   | { type: "popup:stop_recording" }
   | { type: "popup:pause_recording" }
   | { type: "popup:resume_recording" }

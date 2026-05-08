@@ -50,7 +50,10 @@ async function saveSession(s: RecordingSessionState | null): Promise<void> {
 
 // ---- Recording lifecycle ----
 
-async function startRecording(micEnabled: boolean): Promise<RecordingSessionState | null> {
+async function startRecording(
+  micEnabled: boolean,
+  mode: "skill" | "improvement" = "skill",
+): Promise<RecordingSessionState | null> {
   const authClient = getAuthSupabase();
   const db = getDataSupabase();
   const { data: auth } = await authClient.auth.getUser();
@@ -68,6 +71,7 @@ async function startRecording(micEnabled: boolean): Promise<RecordingSessionStat
       id: recordingId,
       user_id: auth.user.id,
       status: "recording",
+      mode,
       started_at: new Date(startedAtMs).toISOString(),
       meta: { ua: navigator.userAgent, platform: navigator.platform },
     });
@@ -91,6 +95,7 @@ async function startRecording(micEnabled: boolean): Promise<RecordingSessionStat
     // the popup can show "off" vs "denied" correctly.
     audio_supported: true,
     mic_enabled: micEnabled,
+    mode,
     ask_count: 0,
     last_ask_at: 0,
     event_count: 0,
@@ -793,7 +798,7 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse)
         case "popup:start_recording": {
           // mic_enabled is required from the popup; if missing we default
           // to opt-out (false) — never silently capture audio.
-          const state = await startRecording(msg.mic_enabled ?? false);
+          const state = await startRecording(msg.mic_enabled ?? false, msg.mode ?? "skill");
           sendResponse({ state });
           break;
         }

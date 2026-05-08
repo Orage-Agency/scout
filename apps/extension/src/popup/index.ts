@@ -27,9 +27,20 @@ const RECENT_KEY = "scout:recent_recording_id";
 // User preference: whether to capture microphone during recordings.
 const MIC_PREF_KEY = "scout:mic_enabled";
 
+// User preference: which kind of recording — capture a workflow as a SKILL.md
+// ("skill") or capture a critique of an existing app to feed into Claude Code
+// ("improvement").
+const MODE_PREF_KEY = "scout:recording_mode";
+
 async function getMicEnabled(): Promise<boolean> {
   const v = await chrome.storage.local.get(MIC_PREF_KEY);
   return (v[MIC_PREF_KEY] as boolean | undefined) ?? true;
+}
+
+async function getRecordingMode(): Promise<"skill" | "improvement"> {
+  const v = await chrome.storage.local.get(MODE_PREF_KEY);
+  const m = v[MODE_PREF_KEY] as string | undefined;
+  return m === "improvement" ? "improvement" : "skill";
 }
 
 // Cached role from the JWT app_metadata.role claim. "admin" means Orage; can
@@ -152,7 +163,7 @@ function header(active: "record" | "library" | "settings" | null): HTMLElement {
   h.innerHTML = `
     <div class="flex items-baseline gap-3">
       <span class="display text-[28px]" style="color:#E4AF7A;">SCOUT</span>
-      <span class="label" style="font-size:9px;">v0.1.7 · Orage AI</span>
+      <span class="label" style="font-size:9px;">v0.1.8 · Orage AI</span>
     </div>
     <div class="divider-gold"></div>
   `;
@@ -269,17 +280,29 @@ function recordTab(): HTMLElement {
       </button>
     </div>
     <div class="display text-[18px] mt-3" style="color:#E4AF7A;">Start Recording</div>
-    <p class="text-[12px] leading-relaxed max-w-[280px]" style="color:rgba(255,232,199,0.55);">We'll capture clicks, keystrokes, and screenshots. Enable voice narration to talk through the <em style="color:#E4AF7A;font-style:normal;">why</em> and the skill writes itself.</p>
-    <div class="glass flex items-center gap-3 px-4 py-2.5 w-full max-w-[260px]">
-      <span id="mic-icon" style="font-size:16px; transition:opacity 0.15s;">🎙</span>
-      <span class="text-[12px] flex-1 text-left" style="color:rgba(255,232,199,0.65);">Voice narration</span>
-      <button id="mic-toggle" class="tab-pill text-[10px]" style="min-width:40px; padding:4px 10px;">ON</button>
+    <p id="mode-blurb" class="text-[12px] leading-relaxed max-w-[280px]" style="color:rgba(255,232,199,0.55);">We'll capture clicks, keystrokes, and screenshots. Enable voice narration to talk through the <em style="color:#E4AF7A;font-style:normal;">why</em> and the skill writes itself.</p>
+    <div class="glass flex flex-col gap-2 px-4 py-3 w-full max-w-[280px]">
+      <div class="flex items-center gap-2">
+        <span class="text-[10px]" style="color:rgba(255,232,199,0.45);font-family:'Bebas Neue',sans-serif;letter-spacing:0.18em;text-transform:uppercase;">Mode</span>
+        <div class="ml-auto flex gap-1">
+          <button id="mode-skill" class="tab-pill text-[10px]" style="padding:4px 10px;">Skill</button>
+          <button id="mode-improvement" class="tab-pill text-[10px]" style="padding:4px 10px;">Improvements</button>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <span id="mic-icon" style="font-size:14px; transition:opacity 0.15s;">🎙</span>
+        <span class="text-[12px] flex-1 text-left" style="color:rgba(255,232,199,0.65);">Voice narration</span>
+        <button id="mic-toggle" class="tab-pill text-[10px]" style="min-width:40px; padding:4px 10px;">ON</button>
+      </div>
     </div>
     <p id="warn" class="text-[11px] leading-snug hidden glass px-3 py-2 mt-1" style="color:#B45309;"></p>
   `;
   const warnEl = d.querySelector<HTMLParagraphElement>("#warn")!;
   const micIcon = d.querySelector<HTMLSpanElement>("#mic-icon")!;
   const micToggleBtn = d.querySelector<HTMLButtonElement>("#mic-toggle")!;
+  const modeSkillBtn = d.querySelector<HTMLButtonElement>("#mode-skill")!;
+  const modeImproveBtn = d.querySelector<HTMLButtonElement>("#mode-improvement")!;
+  const blurb = d.querySelector<HTMLParagraphElement>("#mode-blurb")!;
 
   // Load saved mic preference and reflect in UI.
   void getMicEnabled().then((enabled) => {
@@ -297,6 +320,26 @@ function recordTab(): HTMLElement {
     micIcon.style.opacity = next ? "1" : "0.3";
   };
 
+  // Load + paint mode preference. Improvements mode rewrites the body blurb
+  // so the user knows what to do during the recording.
+  const renderMode = (mode: "skill" | "improvement") => {
+    const isImprove = mode === "improvement";
+    modeSkillBtn.className = `tab-pill text-[10px]${!isImprove ? " active" : ""}`;
+    modeImproveBtn.className = `tab-pill text-[10px]${isImprove ? " active" : ""}`;
+    blurb.innerHTML = isImprove
+      ? `Walk through the app and call out what's <em style="color:#E4AF7A;font-style:normal;">wrong</em>: a broken layout, a confusing label, a feature that should exist. Click on the things you mention. Scout turns it into a paste-ready brief for Claude Code.`
+      : `We'll capture clicks, keystrokes, and screenshots. Enable voice narration to talk through the <em style="color:#E4AF7A;font-style:normal;">why</em> and the skill writes itself.`;
+  };
+  void getRecordingMode().then(renderMode);
+  modeSkillBtn.onclick = async () => {
+    await chrome.storage.local.set({ [MODE_PREF_KEY]: "skill" });
+    renderMode("skill");
+  };
+  modeImproveBtn.onclick = async () => {
+    await chrome.storage.local.set({ [MODE_PREF_KEY]: "improvement" });
+    renderMode("improvement");
+  };
+
   // Show a hint if the active tab is one Chrome blocks content scripts on —
   // recording technically still runs (audio + tab events) but no clicks/keys
   // are captured, which looks like "nothing's happening".
@@ -312,9 +355,11 @@ function recordTab(): HTMLElement {
   });
   d.querySelector<HTMLButtonElement>("#rec")!.onclick = async () => {
     const micEnabled = await getMicEnabled();
+    const mode = await getRecordingMode();
     const resp = await chrome.runtime.sendMessage({
       type: "popup:start_recording",
       mic_enabled: micEnabled,
+      mode,
     } satisfies RuntimeMessage);
     if (resp?.state) {
       view = { kind: "recording", state: resp.state };
@@ -376,15 +421,22 @@ async function loadLibrary(container: HTMLDivElement): Promise<void> {
     const dur = r.duration_ms ? `${Math.round(r.duration_ms / 1000)}s` : "—";
     const status = r.status;
     const hasSkill = (r.skills?.length ?? 0) > 0;
+    const isImprovement = r.mode === "improvement";
+    const modeBadge = isImprovement
+      ? `<span class="label" style="font-size:9px;color:#E07B39;background:rgba(224,123,57,0.12);padding:2px 6px;border-radius:4px;letter-spacing:0.04em;">improvement</span>`
+      : "";
     card.innerHTML = `
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 flex-1">
-          <div class="text-[13px] font-medium truncate" style="color:#FFE8C7;">${escapeHtml(title)}</div>
+          <div class="flex items-center gap-2">
+            <div class="text-[13px] font-medium truncate" style="color:#FFE8C7;">${escapeHtml(title)}</div>
+            ${modeBadge}
+          </div>
           <div class="text-[11px] mt-1" style="color:rgba(255,232,199,0.45);">${escapeHtml(date)} · ${dur}</div>
         </div>
         <span class="${statusColor(status)}" style="font-family:'Bebas Neue',sans-serif; font-size:10px; letter-spacing:0.18em; text-transform:uppercase;">${status}</span>
       </div>
-      <div class="mt-2 text-[11px]" style="color:${hasSkill ? "#E4AF7A" : "rgba(255,232,199,0.4)"};">${hasSkill ? "✦ Skill ready" : "No skill yet"}</div>
+      <div class="mt-2 text-[11px]" style="color:${hasSkill ? "#E4AF7A" : "rgba(255,232,199,0.4)"};">${hasSkill ? (isImprovement ? "✦ Brief ready" : "✦ Skill ready") : (isImprovement ? "Brief pending" : "No skill yet")}</div>
     `;
     card.onclick = () => {
       const sorted = [...(r.skills ?? [])].sort((a, b) => b.version - a.version);
@@ -593,10 +645,11 @@ async function runAutoGenerate(rec: RecordingRow, extra?: string): Promise<void>
     const skill = (await res.json()) as SkillRow;
     const { data: refreshed } = await db.from("recordings").select("*").eq("id", rec.id).single();
     if (view.kind === "processing" && view.recording.id === rec.id) {
-      // Auto-download only for admins — guests' skills stay server-side
-      // (Orage owns them and deploys hosted agents from them).
+      // Auto-download only for admins on SKILL recordings — improvement
+      // briefs are paste-into-Claude artifacts, not zip-into-claude-skills.
       let autoDownloaded = false;
-      if (isAdmin()) {
+      const isImprovement = skill.kind === "improvement" || (refreshed as RecordingRow | null)?.mode === "improvement";
+      if (isAdmin() && !isImprovement) {
         try { downloadClaudeSkill(skill); autoDownloaded = true; }
         catch (e) { console.warn("[scout] auto-download failed", e); }
       }
@@ -746,31 +799,59 @@ function skillView(rec: RecordingRow, skill: SkillRow | null, allSkills: SkillRo
     d.appendChild(banner);
   }
 
-  // The primary CTA is always "Save as Claude Code skill" — but if we already
-  // auto-downloaded once, demote it to a re-download button.
+  // Improvement briefs have a different action set: the primary action is
+  // "Copy for Claude Code" (the brief itself, paste-ready), no zip, no
+  // dry-run. Skills keep the existing controls.
+  const isImprovement = skill.kind === "improvement" || rec.mode === "improvement";
   const actions = document.createElement("div");
   actions.className = "flex flex-col gap-2 mb-3";
-  actions.innerHTML = `
-    <button id="claude" class="btn ${autoDownloaded ? "" : "btn-primary"} w-full">${autoDownloaded ? "Save again" : "⬇ Save as Claude Code skill"}</button>
-    <button id="dryrun" class="btn w-full">⚙ Test in cloud (dry-run)</button>
-    <div class="grid grid-cols-3 gap-2">
-      <button id="cp" class="btn text-[11px]">Copy</button>
-      <button id="dl" class="btn text-[11px]">Save .md</button>
-      <button id="rg" class="btn text-[11px]">Regenerate</button>
-    </div>
-    <pre id="dryout" class="text-[10px] hidden whitespace-pre-wrap" style="background:rgba(0,0,0,0.5);padding:8px;border-radius:6px;color:rgba(255,232,199,0.8);max-height:200px;overflow-y:auto;"></pre>
-  `;
-  actions.querySelector<HTMLButtonElement>("#claude")!.onclick = () => downloadClaudeSkill(skill);
-  actions.querySelector<HTMLButtonElement>("#dl")!.onclick = () => downloadMd(skill);
-  actions.querySelector<HTMLButtonElement>("#cp")!.onclick = async () => {
-    await navigator.clipboard.writeText(skill.body_md);
-    actions.querySelector<HTMLButtonElement>("#cp")!.textContent = "Copied";
-  };
-  actions.querySelector<HTMLButtonElement>("#rg")!.onclick = () => {
-    const extra = prompt("Optional: extra guidance for regeneration", "");
-    generate(rec.id, d, extra ?? undefined);
-  };
-  actions.querySelector<HTMLButtonElement>("#dryrun")!.onclick = () => void runDryRun(skill, actions);
+  if (isImprovement) {
+    actions.innerHTML = `
+      <button id="cc-copy" class="btn btn-primary w-full">📋 Copy for Claude Code</button>
+      <div class="grid grid-cols-3 gap-2">
+        <button id="cp" class="btn text-[11px]">Copy raw</button>
+        <button id="dl" class="btn text-[11px]">Save .md</button>
+        <button id="rg" class="btn text-[11px]">Regenerate</button>
+      </div>
+    `;
+    actions.querySelector<HTMLButtonElement>("#cc-copy")!.onclick = async () => {
+      await navigator.clipboard.writeText(formatBriefForClaudeCode(skill, rec));
+      const b = actions.querySelector<HTMLButtonElement>("#cc-copy")!;
+      b.textContent = "Copied — paste into Claude Code";
+      setTimeout(() => { b.textContent = "📋 Copy for Claude Code"; }, 2500);
+    };
+    actions.querySelector<HTMLButtonElement>("#dl")!.onclick = () => downloadMd(skill);
+    actions.querySelector<HTMLButtonElement>("#cp")!.onclick = async () => {
+      await navigator.clipboard.writeText(skill.body_md);
+      actions.querySelector<HTMLButtonElement>("#cp")!.textContent = "Copied";
+    };
+    actions.querySelector<HTMLButtonElement>("#rg")!.onclick = () => {
+      const extra = prompt("Optional: extra guidance for regeneration", "");
+      generate(rec.id, d, extra ?? undefined);
+    };
+  } else {
+    actions.innerHTML = `
+      <button id="claude" class="btn ${autoDownloaded ? "" : "btn-primary"} w-full">${autoDownloaded ? "Save again" : "⬇ Save as Claude Code skill"}</button>
+      <button id="dryrun" class="btn w-full">⚙ Test in cloud (dry-run)</button>
+      <div class="grid grid-cols-3 gap-2">
+        <button id="cp" class="btn text-[11px]">Copy</button>
+        <button id="dl" class="btn text-[11px]">Save .md</button>
+        <button id="rg" class="btn text-[11px]">Regenerate</button>
+      </div>
+      <pre id="dryout" class="text-[10px] hidden whitespace-pre-wrap" style="background:rgba(0,0,0,0.5);padding:8px;border-radius:6px;color:rgba(255,232,199,0.8);max-height:200px;overflow-y:auto;"></pre>
+    `;
+    actions.querySelector<HTMLButtonElement>("#claude")!.onclick = () => downloadClaudeSkill(skill);
+    actions.querySelector<HTMLButtonElement>("#dl")!.onclick = () => downloadMd(skill);
+    actions.querySelector<HTMLButtonElement>("#cp")!.onclick = async () => {
+      await navigator.clipboard.writeText(skill.body_md);
+      actions.querySelector<HTMLButtonElement>("#cp")!.textContent = "Copied";
+    };
+    actions.querySelector<HTMLButtonElement>("#rg")!.onclick = () => {
+      const extra = prompt("Optional: extra guidance for regeneration", "");
+      generate(rec.id, d, extra ?? undefined);
+    };
+    actions.querySelector<HTMLButtonElement>("#dryrun")!.onclick = () => void runDryRun(skill, actions);
+  }
   d.appendChild(actions);
 
   // One-line install hint so the user knows where the zip goes.
@@ -886,6 +967,21 @@ async function runDryRun(skill: SkillRow, container: HTMLElement): Promise<void>
     btn.disabled = false;
     btn.textContent = "⚙ Test in cloud (dry-run)";
   }
+}
+
+// Format an improvement brief as a clean prompt for Claude Code. The body
+// already follows our IMPROVEMENT_SYSTEM template; we just add a short
+// preamble that tells Claude Code to act on it.
+function formatBriefForClaudeCode(skill: SkillRow, _rec: RecordingRow): string {
+  return `You are about to make a change to my app based on a critique I recorded while using it. The brief below was generated from a Scout recording — clicks, screenshots, and narration. Read it, ask if anything is unclear, then make the change.
+
+---
+
+${skill.body_md.trim()}
+
+---
+
+When you're done, summarise the file(s) you changed and any decisions you made.`;
 }
 
 function downloadMd(skill: SkillRow): void {
