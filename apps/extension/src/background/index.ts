@@ -240,6 +240,7 @@ async function pauseRecording(): Promise<void> {
   (state as RecordingSessionState & { _pauseStartedAt?: number })._pauseStartedAt = Date.now();
   await saveSession(state);
   stopTimers();
+  broadcastPauseState(true, state.event_count);
 }
 
 async function resumeRecording(): Promise<void> {
@@ -254,6 +255,7 @@ async function resumeRecording(): Promise<void> {
   state.is_paused = false;
   await saveSession(state);
   startTimers();
+  broadcastPauseState(false, state.event_count);
 }
 
 // MV3 service workers hibernate after ~30s of idle, which silently kills
@@ -922,6 +924,20 @@ async function broadcastToTabs(msg: RuntimeMessage): Promise<void> {
   await Promise.all(
     tabs.map((t) => (t.id ? chrome.tabs.sendMessage(t.id, msg).catch(() => {}) : Promise.resolve()))
   );
+}
+
+// Push pause/resume state to the active tab's control bar so it stays in sync
+// when the popup is used to pause/resume rather than the in-page bar buttons.
+function broadcastPauseState(is_paused: boolean, event_count: number): void {
+  chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+    if (tab?.id) {
+      chrome.tabs.sendMessage(tab.id, {
+        type: "content:update_count",
+        event_count,
+        is_paused,
+      } satisfies RuntimeMessage).catch(() => {});
+    }
+  });
 }
 
 // Broadcast a recording status change to anything listening (popup, library

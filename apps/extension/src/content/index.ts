@@ -486,6 +486,30 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
       if (bar) {
         const el = bar.querySelector<HTMLElement>("[data-scout-count]");
         if (el) el.textContent = String(msg.event_count);
+        // Sync pause state when changed from the popup
+        if (msg.is_paused !== undefined) {
+          const wasPaused = bar.getAttribute("data-paused") === "true";
+          if (wasPaused !== msg.is_paused) {
+            if (msg.is_paused) {
+              bar.setAttribute("data-pause-started", String(Date.now()));
+            } else {
+              const pauseStart = Number(bar.getAttribute("data-pause-started") || "0");
+              if (pauseStart) {
+                const prev = Number(bar.getAttribute("data-paused-ms") || "0");
+                bar.setAttribute("data-paused-ms", String(prev + Date.now() - pauseStart));
+              }
+              bar.removeAttribute("data-pause-started");
+            }
+            bar.setAttribute("data-paused", String(msg.is_paused));
+            const dot = bar.querySelector<HTMLElement>("[data-scout-dot]");
+            const pauseBtn = bar.querySelector<HTMLButtonElement>("[data-scout-pause]");
+            if (dot) {
+              dot.style.background = msg.is_paused ? "rgba(182,128,57,0.55)" : "#DC2626";
+              dot.style.animation = msg.is_paused ? "none" : "scout-pulse 1.6s ease-in-out infinite";
+            }
+            if (pauseBtn) pauseBtn.textContent = msg.is_paused ? "▶" : "⏸";
+          }
+        }
       }
       sendResponse({ ok: true });
       return true;
