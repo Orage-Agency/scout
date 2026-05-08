@@ -25,6 +25,23 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     chrome.runtime.sendMessage({ type: "content:event", event: ev } satisfies RuntimeMessage).catch(() => {});
   };
 
+  // Walk up the DOM from el to find row/item context text — helps the LLM
+  // understand WHICH record a button click acted on (e.g. which order row).
+  function rowContextText(el: Element): string | null {
+    const CONTAINERS = new Set(["tr", "li", "article", "section", "dd", "dt"]);
+    let cur: Element | null = el.parentElement;
+    for (let depth = 0; depth < 5 && cur; depth++, cur = cur.parentElement) {
+      if (CONTAINERS.has(cur.tagName.toLowerCase())) {
+        // Get visible text, strip the target element's own text to avoid duplication.
+        const full = ((cur as HTMLElement).innerText || cur.textContent || "").replace(/\s+/g, " ").trim();
+        const own = ((el as HTMLElement).innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+        const stripped = full.replace(own, "").replace(/\s+/g, " ").trim();
+        return stripped.slice(0, 80) || null;
+      }
+    }
+    return null;
+  }
+
   document.addEventListener(
     "mousedown",
     (e) => {
@@ -32,7 +49,8 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
       const target = e.target as Element | null;
       if (!target || isOurOwnUi(target)) return;
       const sel = buildSelector(target);
-      post("click", { x: e.clientX, y: e.clientY, target: sel, tab_url: location.href });
+      const ctx = rowContextText(target);
+      post("click", { x: e.clientX, y: e.clientY, target: sel, context_text: ctx ?? undefined, tab_url: location.href });
     },
     { capture: true, passive: true }
   );

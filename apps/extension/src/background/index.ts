@@ -447,7 +447,9 @@ function describeEvent(ev: CapturedEvent): string | null {
   switch (ev.kind) {
     case "click": {
       const t = d.target as { visibleText?: string; selector?: string } | undefined;
-      return `Clicked: ${t?.visibleText || t?.selector || "element"}`;
+      const ctx = String(d.context_text ?? "").slice(0, 30);
+      const label = t?.visibleText || t?.selector || "element";
+      return ctx ? `Clicked: ${label} — ${ctx}` : `Clicked: ${label}`;
     }
     case "paste":  return `Pasted into form`;
     case "copy": {

@@ -47,7 +47,9 @@ function summarizeCoachEvents(
     const t = `${Math.round(e.ts_ms / 1000)}s`;
     if (e.kind === "click") {
       const tgt = e.data?.target as { visibleText?: string; selector?: string } | undefined;
-      lines.push(`${t} click: ${tgt?.visibleText || tgt?.selector || "?"}`);
+      const ctx = String(e.data?.context_text ?? "").slice(0, 40);
+      const label = tgt?.visibleText || tgt?.selector || "?";
+      lines.push(ctx ? `${t} click: "${label}" (in: "${ctx}")` : `${t} click: ${label}`);
     } else if (e.kind === "keydown") {
       lines.push(`${t} key: ${e.data.key}`);
     } else if (e.kind === "paste") {

@@ -483,7 +483,9 @@ function summarizeEvents(events: Array<{ ts_ms: number; kind: string; data: Reco
     } else if (e.kind === "click") {
       flushTyping();
       const tgt = (e.data?.target as { strategy: string; selector: string; visibleText?: string } | undefined);
-      lines.push(`${ts} click ${tgt?.visibleText || tgt?.selector || "?"}`);
+      const ctx = String((e.data as Record<string, unknown>).context_text ?? "").slice(0, 60);
+      const label = tgt?.visibleText || tgt?.selector || "?";
+      lines.push(ctx ? `${ts} click "${label}" (in: "${ctx}")` : `${ts} click ${label}`);
     } else if (e.kind === "paste") {
       flushTyping();
       lines.push(`${ts} paste "${((e.data as Record<string, unknown>).content_snippet as string) ?? ""}"`);
