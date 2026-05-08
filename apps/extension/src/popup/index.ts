@@ -1458,6 +1458,17 @@ function skillView(
       <pre id="dryout" class="text-[10px] hidden whitespace-pre-wrap" style="background:rgba(0,0,0,0.55);padding:10px;border-radius:6px;color:rgba(255,232,199,0.75);max-height:180px;overflow-y:auto;border:1px solid rgba(182,128,57,0.18);"></pre>
     `;
     actions.querySelector<HTMLButtonElement>("#cc-copy")!.onclick = async () => {
+      const vars = extractVariables(skill.body_md);
+      if (vars.length > 0) {
+        // Show the variable fill panel instead of copying immediately.
+        const existing = actions.querySelector("#var-panel");
+        if (existing) { existing.remove(); return; }
+        const panel = buildVarPanel(skill, async (filled) => {
+          await navigator.clipboard.writeText(formatSkillForClaudeCode(skill, filled));
+        });
+        actions.appendChild(panel);
+        return;
+      }
       await navigator.clipboard.writeText(formatSkillForClaudeCode(skill));
       const b = actions.querySelector<HTMLButtonElement>("#cc-copy")!;
       b.textContent = "Copied — paste into Claude Code";
@@ -1726,13 +1737,85 @@ async function runDryRun(skill: SkillRow, container: HTMLElement): Promise<void>
   }
 }
 
-function formatSkillForClaudeCode(skill: SkillRow): string {
-  const desc = (skill.body_md.match(/^description:\s*(.+)$/m)?.[1] ?? "this workflow").trim();
+function extractVariables(bodyMd: string): string[] {
+  const seen = new Set<string>();
+  for (const [, name] of bodyMd.matchAll(/\{([a-z_][a-z0-9_]*)\}/g)) seen.add(name);
+  return Array.from(seen);
+}
+
+function extractExampleValues(bodyMd: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const m = bodyMd.match(/## Input examples[\s\S]*?```json\s*([\s\S]*?)```/i);
+  if (!m) return out;
+  try {
+    const obj = JSON.parse(m[1]);
+    for (const [k, v] of Object.entries(obj)) out[k] = String(v);
+  } catch { /* malformed json — just use empty defaults */ }
+  return out;
+}
+
+function substituteVariables(text: string, values: Record<string, string>): string {
+  return text.replace(/\{([a-z_][a-z0-9_]*)\}/g, (match, name: string) => values[name] ?? match);
+}
+
+function buildVarPanel(skill: SkillRow, onCopy: (filled: string) => void): HTMLElement {
+  const vars = extractVariables(skill.body_md);
+  const examples = extractExampleValues(skill.body_md);
+  const panel = document.createElement("div");
+  panel.id = "var-panel";
+  panel.className = "flex flex-col gap-2 p-3 rounded-lg mt-1";
+  panel.style.cssText = "background:rgba(0,0,0,0.4);border:1px solid rgba(182,128,57,0.25);";
+
+  const header = document.createElement("p");
+  header.className = "text-[10px] font-semibold tracking-wider uppercase";
+  header.style.color = "#B68039";
+  header.textContent = `Fill ${vars.length} variable${vars.length !== 1 ? "s" : ""} before copying`;
+  panel.appendChild(header);
+
+  const inputs: Record<string, HTMLInputElement> = {};
+  for (const name of vars) {
+    const lbl = document.createElement("label");
+    lbl.className = "flex flex-col gap-0.5";
+    const nameEl = document.createElement("span");
+    nameEl.className = "text-[10px]";
+    nameEl.style.color = "rgba(228,175,122,0.65)";
+    nameEl.textContent = name;
+    lbl.appendChild(nameEl);
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.value = examples[name] ?? "";
+    inp.placeholder = `{${name}}`;
+    inp.className = "text-[11px] px-2 py-1 rounded focus:outline-none";
+    inp.style.cssText = "background:rgba(0,0,0,0.5);border:1px solid rgba(182,128,57,0.3);color:#FFE8C7;";
+    inp.addEventListener("focus", () => { inp.style.borderColor = "#B68039"; });
+    inp.addEventListener("blur", () => { inp.style.borderColor = "rgba(182,128,57,0.3)"; });
+    lbl.appendChild(inp);
+    panel.appendChild(lbl);
+    inputs[name] = inp;
+  }
+
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "btn btn-primary w-full text-[12px] mt-1";
+  copyBtn.textContent = "Copy with variables filled";
+  copyBtn.onclick = () => {
+    const values: Record<string, string> = {};
+    for (const [k, inp] of Object.entries(inputs)) values[k] = inp.value.trim() || `{${k}}`;
+    onCopy(substituteVariables(skill.body_md, values));
+    copyBtn.textContent = "Copied — paste into Claude Code";
+    setTimeout(() => { copyBtn.textContent = "Copy with variables filled"; }, 2500);
+  };
+  panel.appendChild(copyBtn);
+  return panel;
+}
+
+function formatSkillForClaudeCode(skill: SkillRow, filledBody?: string): string {
+  const body = filledBody ?? skill.body_md;
+  const desc = (body.match(/^description:\s*(.+)$/m)?.[1] ?? "this workflow").trim();
   return `I'm sharing a skill with you so you can use it in this session. Learn it and confirm you understand it.
 
 ---
 
-${skill.body_md.trim()}
+${body.trim()}
 
 ---
 
