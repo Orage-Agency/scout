@@ -112,9 +112,10 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
 
   const BAR_ID = "scout-control-bar";
   const TOAST_ID = "scout-toast";
+  const FRAME_ID = "scout-recording-frame";
 
   function isOurOwnUi(el: Element): boolean {
-    return !!el.closest?.(`#${BAR_ID}, #${TOAST_ID}`);
+    return !!el.closest?.(`#${BAR_ID}, #${TOAST_ID}, #${FRAME_ID}`);
   }
 
   // The page might re-render and wipe our bar (Gmail, Notion, any SPA route
@@ -214,6 +215,84 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     barObserver = null;
   }
 
+  // Liquid-glass border that wraps the entire viewport while a recording
+  // is active. Four 6px strips at the edges (top/right/bottom/left) so the
+  // page interior is untouched. pointer-events:none everywhere so it
+  // doesn't intercept clicks. A traveling shimmer animates around the
+  // perimeter to make the recording state unmistakable without being noisy.
+  function ensureRecordingFrame(): HTMLElement {
+    let frame = document.getElementById(FRAME_ID);
+    if (frame) return frame;
+    frame = document.createElement("div");
+    frame.id = FRAME_ID;
+    frame.setAttribute("data-scout-ignore", "true");
+    frame.setAttribute("aria-hidden", "true");
+    // Wrapper sits above the page; pointer-events:none means it can never
+    // block a click. Each strip is positioned absolutely against the wrapper.
+    frame.style.cssText = `
+      position: fixed; inset: 0; pointer-events: none;
+      z-index: 2147483645;
+    `;
+    const stripBase = `
+      position: absolute; pointer-events: none;
+      backdrop-filter: blur(8px) saturate(160%);
+      -webkit-backdrop-filter: blur(8px) saturate(160%);
+      box-shadow:
+        inset 0 0 0 1px rgba(228, 175, 122, 0.40),
+        inset 0 0 14px rgba(182, 128, 57, 0.25),
+        0 0 18px rgba(182, 128, 57, 0.15);
+      background:
+        linear-gradient(90deg,
+          rgba(228, 175, 122, 0.10) 0%,
+          rgba(228, 175, 122, 0.30) 50%,
+          rgba(228, 175, 122, 0.10) 100%);
+      background-size: 200% 100%;
+    `;
+    const top = document.createElement("div");
+    top.setAttribute("data-scout-ignore", "true");
+    top.style.cssText = stripBase + `top: 0; left: 0; right: 0; height: 6px;
+      animation: scout-frame-h 3.6s linear infinite;`;
+    const bottom = document.createElement("div");
+    bottom.setAttribute("data-scout-ignore", "true");
+    bottom.style.cssText = stripBase + `bottom: 0; left: 0; right: 0; height: 6px;
+      animation: scout-frame-h 3.6s linear infinite reverse;`;
+    const left = document.createElement("div");
+    left.setAttribute("data-scout-ignore", "true");
+    left.style.cssText = stripBase + `top: 0; bottom: 0; left: 0; width: 6px;
+      background-size: 100% 200%;
+      animation: scout-frame-v 3.6s linear infinite;`;
+    const right = document.createElement("div");
+    right.setAttribute("data-scout-ignore", "true");
+    right.style.cssText = stripBase + `top: 0; bottom: 0; right: 0; width: 6px;
+      background-size: 100% 200%;
+      animation: scout-frame-v 3.6s linear infinite reverse;`;
+    frame.appendChild(top);
+    frame.appendChild(bottom);
+    frame.appendChild(left);
+    frame.appendChild(right);
+    if (!document.getElementById("scout-frame-style")) {
+      const st = document.createElement("style");
+      st.id = "scout-frame-style";
+      st.textContent = `
+        @keyframes scout-frame-h {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+        @keyframes scout-frame-v {
+          0% { background-position: 0 200%; }
+          100% { background-position: 0 -200%; }
+        }
+      `;
+      document.head.appendChild(st);
+    }
+    document.body.appendChild(frame);
+    return frame;
+  }
+
+  function removeRecordingFrame(): void {
+    document.getElementById(FRAME_ID)?.remove();
+  }
+
   // Watch the body for re-renders. If our bar gets removed and we're still
   // recording, re-create it. document.body itself may be replaced (Gmail
   // does this on inbox -> conversation transitions), so we observe at the
@@ -229,6 +308,10 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
       }
       if (!document.getElementById(BAR_ID) && document.body) {
         ensureControlBar();
+      }
+      // Same SPA-wipe handling for the frame.
+      if (!document.getElementById(FRAME_ID) && document.body) {
+        ensureRecordingFrame();
       }
     });
     barObserver.observe(document.documentElement, {
@@ -307,6 +390,7 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     if (msg.type === "content:show_control_bar") {
       recordingActive = true;
       const bar = ensureControlBar();
+      ensureRecordingFrame();
       startBarObserver();
       // Ask the worker for the start time and mic state.
       chrome.runtime.sendMessage({ type: "popup:get_state" } satisfies RuntimeMessage, (resp) => {
@@ -326,6 +410,7 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     if (msg.type === "content:hide_control_bar") {
       recordingActive = false;
       removeControlBar();
+      removeRecordingFrame();
       sendResponse({ ok: true });
       return true;
     }
@@ -338,6 +423,7 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
     if (state) {
       recordingActive = true;
       const bar = ensureControlBar();
+      ensureRecordingFrame();
       bar.setAttribute("data-started", String(state.started_at));
       startBarObserver();
       const micEl = bar.querySelector<HTMLElement>("[data-scout-mic]");

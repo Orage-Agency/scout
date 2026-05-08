@@ -163,7 +163,7 @@ function header(active: "record" | "library" | "settings" | null): HTMLElement {
   h.innerHTML = `
     <div class="flex items-baseline gap-3">
       <span class="display text-[28px]" style="color:#E4AF7A;">SCOUT</span>
-      <span class="label" style="font-size:9px;">v0.1.9 · Orage AI</span>
+      <span class="label" style="font-size:9px;">v0.1.10 · Orage AI</span>
     </div>
     <div class="divider-gold"></div>
   `;
