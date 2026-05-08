@@ -2,6 +2,35 @@
 
 A Chrome extension that captures human workflows and turns them into structured `SKILL.md` files for AI agents.
 
+---
+
+## What's new in v0.1.6
+
+### Your recordings now follow you everywhere
+
+Before this update, the Library tab could show up empty even though your recordings were safely saved. This happened because of a timing glitch when the extension first opened — it would try to load your recordings before it had finished logging you in behind the scenes. That's fixed. Now your full recording history loads correctly every time you open the extension, on any device, as long as you're signed in with the same account.
+
+### You can now choose whether to use your microphone
+
+There's a new **Voice narration ON/OFF toggle** on the Record tab, right below the big record button.
+
+- **ON (default):** Scout records your mic while you work. Talk through what you're doing — "I'm filtering by this date because…", "I always check this field first" — and that narration gets transcribed and woven into the skill file. The more you explain, the smarter the output.
+- **OFF:** Scout records only your clicks, keystrokes, and screenshots. No mic, no audio file, no transcription step. The skill still gets generated, just from actions alone.
+
+Your choice is saved. You don't have to set it every time.
+
+**How you can tell what's happening:**
+
+| Where | What you see |
+|---|---|
+| Record tab | Toggle showing ON or OFF |
+| Recording view (popup) | 🎙 **live** (pulsing green) · 🎙 **off** · 🎙 **denied** |
+| Floating bar (in the page) | 🎙 icon appears and gently pulses while mic is active |
+
+When the mic is off, recording stops faster too — it skips the audio upload and transcription wait entirely and jumps straight to generating your skill.
+
+---
+
 > See `scout_v1_build_brief.pdf` (in the user's Downloads at build time) for the full product brief.
 
 ## Install
