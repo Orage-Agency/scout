@@ -227,12 +227,7 @@ Deno.serve(async (req) => {
       .map((s: { start_ms: number; text: string }) => `[${Math.round(s.start_ms / 1000)}s] ${s.text}`)
       .join("\n");
 
-    const isImprovement = rec.mode === "improvement";
-    const systemPrompt = isImprovement ? IMPROVEMENT_SYSTEM : SYSTEM;
-    const headerLine = isImprovement
-      ? "Now produce the CHANGE BRIEF from these materials."
-      : "Now produce the SKILL.md from these materials.";
-    const userPrompt = `${headerLine}${extra ? `\nExtra guidance from the user: ${extra}` : ""}
+    const baseUserPrompt = (header: string) => `${header}${extra ? `\nExtra guidance from the user: ${extra}` : ""}
 
 EVENTS (${events?.length ?? 0} total, summarized):
 ${summarizeEvents(events ?? [])}
@@ -245,53 +240,98 @@ ${(coachLog ?? []).map((c) => `Q (${Math.round(c.asked_at_ms / 1000)}s): ${c.ask
 
 SCREENSHOTS: ${images.length} attached as image blocks below.`;
 
-    const content: Array<unknown> = [{ type: "text", text: userPrompt }];
-    for (const img of images) content.push(img);
+    const buildContent = (header: string): unknown[] => {
+      const c: unknown[] = [{ type: "text", text: baseUserPrompt(header) }];
+      for (const img of images) c.push(img);
+      return c;
+    };
 
+    // Always run BOTH prompts in parallel. Every recording yields a SKILL.md
+    // AND a CHANGE BRIEF — the user picks which to look at later. The mode
+    // hint on the recording is preserved as a "primary intent" signal but
+    // doesn't gate which artifact gets produced.
     // deno-lint-ignore no-explicit-any
-    const md = await callLLM({
+    const skillCall = callLLM({
       model: MODEL_SKILL,
       max_tokens: 3500,
-      system: systemPrompt,
+      system: SYSTEM,
       temperature: 0.4,
-      messages: [{ role: "user", content: content as any }],
+      messages: [{ role: "user", content: buildContent("Now produce the SKILL.md from these materials.") as any }],
     });
+    // deno-lint-ignore no-explicit-any
+    const improvementCall = callLLM({
+      model: MODEL_SKILL,
+      max_tokens: 3500,
+      system: IMPROVEMENT_SYSTEM,
+      temperature: 0.4,
+      messages: [{ role: "user", content: buildContent("Now produce the CHANGE BRIEF from these materials.") as any }],
+    });
+    const [skillMd, improvementMd] = await Promise.all([skillCall, improvementCall]);
 
-    // Pull a title and slug from the frontmatter for storage.
-    const slug = (md.match(/^name:\s*(.+)$/m)?.[1] ?? "skill").trim();
-    const title = (md.match(/^#\s+(.+)$/m)?.[1] ?? slug).trim();
+    const skillSlug = (skillMd.match(/^name:\s*(.+)$/m)?.[1] ?? "skill").trim();
+    const skillTitle = (skillMd.match(/^#\s+(.+)$/m)?.[1] ?? skillSlug).trim();
+    const improvementTitle = (improvementMd.match(/^#\s+(.+)$/m)?.[1] ?? "Improvement brief").trim();
 
-    // New version = max(existing) + 1.
-    const { data: existing } = await admin
+    // Each kind gets its own version sequence so v1 of skill and v1 of
+    // improvement are independent. Lookup the max(version) per kind.
+    const { data: existingSkill } = await admin
       .from("skills")
       .select("version")
       .eq("recording_id", recording_id)
+      .eq("kind", "skill")
       .order("version", { ascending: false })
       .limit(1);
-    const version = ((existing?.[0]?.version as number | undefined) ?? 0) + 1;
+    const { data: existingImprovement } = await admin
+      .from("skills")
+      .select("version")
+      .eq("recording_id", recording_id)
+      .eq("kind", "improvement")
+      .order("version", { ascending: false })
+      .limit(1);
+    const skillVersion = ((existingSkill?.[0]?.version as number | undefined) ?? 0) + 1;
+    const improvementVersion = ((existingImprovement?.[0]?.version as number | undefined) ?? 0) + 1;
+
+    const inserts = [
+      {
+        recording_id,
+        user_id: user.id,
+        version: skillVersion,
+        title: skillTitle,
+        body_md: skillMd,
+        kind: "skill" as const,
+        prompt_used: SYSTEM,
+      },
+      {
+        recording_id,
+        user_id: user.id,
+        version: improvementVersion,
+        title: improvementTitle,
+        body_md: improvementMd,
+        kind: "improvement" as const,
+        prompt_used: IMPROVEMENT_SYSTEM,
+      },
+    ];
 
     const { data: inserted, error: insErr } = await admin
       .from("skills")
-      .insert({
-        recording_id,
-        user_id: user.id,
-        version,
-        title,
-        body_md: md,
-        kind: isImprovement ? "improvement" : "skill",
-        prompt_used: systemPrompt,
-      })
-      .select("*")
-      .single();
+      .insert(inserts)
+      .select("*");
     if (insErr) return json({ error: insErr.message }, 500);
 
-    // Backfill the recording row's title if it's still null. The library tab
-    // falls back to "Untitled recording" otherwise.
-    if (!rec.title) {
-      await admin.from("recordings").update({ title }).eq("id", recording_id);
+    // Pick the row that matches the recording's primary intent as the
+    // "default" return — the popup shows that one first. Both are listed
+    // in `all`.
+    const primary = (inserted ?? []).find((r: { kind?: string }) =>
+      rec.mode === "improvement" ? r.kind === "improvement" : r.kind === "skill"
+    ) ?? (inserted ?? [])[0];
+
+    // Backfill the recording row's title if it's still null. Use the
+    // primary artifact's title.
+    if (!rec.title && primary?.title) {
+      await admin.from("recordings").update({ title: primary.title }).eq("id", recording_id);
     }
 
-    return json(inserted);
+    return json({ ...primary, all: inserted });
   } catch (err) {
     console.error("[generate-skill]", err);
     return json({ error: String((err as Error).message) }, 500);

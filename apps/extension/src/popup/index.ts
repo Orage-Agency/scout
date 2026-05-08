@@ -163,7 +163,7 @@ function header(active: "record" | "library" | "settings" | null): HTMLElement {
   h.innerHTML = `
     <div class="flex items-baseline gap-3">
       <span class="display text-[28px]" style="color:#E4AF7A;">SCOUT</span>
-      <span class="label" style="font-size:9px;">v0.1.8 · Orage AI</span>
+      <span class="label" style="font-size:9px;">v0.1.9 · Orage AI</span>
     </div>
     <div class="divider-gold"></div>
   `;
@@ -326,9 +326,11 @@ function recordTab(): HTMLElement {
     const isImprove = mode === "improvement";
     modeSkillBtn.className = `tab-pill text-[10px]${!isImprove ? " active" : ""}`;
     modeImproveBtn.className = `tab-pill text-[10px]${isImprove ? " active" : ""}`;
+    // Both artifacts are generated for every recording. The toggle just
+    // hints which one to open by default in the result view.
     blurb.innerHTML = isImprove
-      ? `Walk through the app and call out what's <em style="color:#E4AF7A;font-style:normal;">wrong</em>: a broken layout, a confusing label, a feature that should exist. Click on the things you mention. Scout turns it into a paste-ready brief for Claude Code.`
-      : `We'll capture clicks, keystrokes, and screenshots. Enable voice narration to talk through the <em style="color:#E4AF7A;font-style:normal;">why</em> and the skill writes itself.`;
+      ? `Walk through the app and call out what's <em style="color:#E4AF7A;font-style:normal;">wrong</em>: a broken layout, a confusing label, a feature that should exist. We always generate <strong>both</strong> a Skill and an Improvements brief — toggling Improvements just opens that one first.`
+      : `We'll capture clicks, keystrokes, and screenshots. Enable voice narration to talk through the <em style="color:#E4AF7A;font-style:normal;">why</em> and the skill writes itself. We always generate <strong>both</strong> a Skill and an Improvements brief — toggling Skill just opens that one first.`;
   };
   void getRecordingMode().then(renderMode);
   modeSkillBtn.onclick = async () => {
@@ -422,9 +424,14 @@ async function loadLibrary(container: HTMLDivElement): Promise<void> {
     const status = r.status;
     const hasSkill = (r.skills?.length ?? 0) > 0;
     const isImprovement = r.mode === "improvement";
+    // Show a small chip indicating the recording's primary intent.
     const modeBadge = isImprovement
       ? `<span class="label" style="font-size:9px;color:#E07B39;background:rgba(224,123,57,0.12);padding:2px 6px;border-radius:4px;letter-spacing:0.04em;">improvement</span>`
       : "";
+    // Both artifacts are generated for every recording. Show a hint when
+    // both rows are actually present so the user knows the picker is live.
+    const kindsPresent = new Set((r.skills ?? []).map((s) => s.kind ?? "skill"));
+    const hasBoth = kindsPresent.has("skill") && kindsPresent.has("improvement");
     card.innerHTML = `
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 flex-1">
@@ -436,11 +443,14 @@ async function loadLibrary(container: HTMLDivElement): Promise<void> {
         </div>
         <span class="${statusColor(status)}" style="font-family:'Bebas Neue',sans-serif; font-size:10px; letter-spacing:0.18em; text-transform:uppercase;">${status}</span>
       </div>
-      <div class="mt-2 text-[11px]" style="color:${hasSkill ? "#E4AF7A" : "rgba(255,232,199,0.4)"};">${hasSkill ? (isImprovement ? "✦ Brief ready" : "✦ Skill ready") : (isImprovement ? "Brief pending" : "No skill yet")}</div>
+      <div class="mt-2 text-[11px]" style="color:${hasSkill ? "#E4AF7A" : "rgba(255,232,199,0.4)"};">${hasSkill ? (hasBoth ? "✦ Skill + Improvements" : (isImprovement ? "✦ Brief ready" : "✦ Skill ready")) : "Generating…"}</div>
     `;
     card.onclick = () => {
       const sorted = [...(r.skills ?? [])].sort((a, b) => b.version - a.version);
-      view = { kind: "skill", recording: r, skill: sorted[0] ?? null, allSkills: sorted };
+      // Default to whichever kind matches the recording's primary intent.
+      const primaryKind = (r.mode ?? "skill") as "skill" | "improvement";
+      const primary = sorted.find((s) => (s.kind ?? "skill") === primaryKind) ?? sorted[0] ?? null;
+      view = { kind: "skill", recording: r, skill: primary, allSkills: sorted };
       render();
     };
     container.appendChild(card);
@@ -645,15 +655,22 @@ async function runAutoGenerate(rec: RecordingRow, extra?: string): Promise<void>
     const skill = (await res.json()) as SkillRow;
     const { data: refreshed } = await db.from("recordings").select("*").eq("id", rec.id).single();
     if (view.kind === "processing" && view.recording.id === rec.id) {
-      // Auto-download only for admins on SKILL recordings — improvement
-      // briefs are paste-into-Claude artifacts, not zip-into-claude-skills.
+      // Every recording now produces BOTH a skill row and an improvement
+      // row (response.all). Pull all of them so the kind+version pickers
+      // work on first render. Auto-download fires only on the SKILL row
+      // (the improvement is a paste-into-Claude artifact, not a zip).
+      const allFromResponse = ((skill as SkillRow & { all?: SkillRow[] }).all ?? [skill]) as SkillRow[];
+      const skillKindRow = allFromResponse.find((s) => (s.kind ?? "skill") === "skill") ?? skill;
       let autoDownloaded = false;
-      const isImprovement = skill.kind === "improvement" || (refreshed as RecordingRow | null)?.mode === "improvement";
-      if (isAdmin() && !isImprovement) {
-        try { downloadClaudeSkill(skill); autoDownloaded = true; }
+      if (isAdmin()) {
+        try { downloadClaudeSkill(skillKindRow); autoDownloaded = true; }
         catch (e) { console.warn("[scout] auto-download failed", e); }
       }
-      view = { kind: "skill", recording: (refreshed as RecordingRow) ?? rec, skill, autoDownloaded };
+      // Default the open view to whichever kind matches the recording's
+      // primary intent (recording.mode). Falls back to the first row.
+      const recMode = (refreshed as RecordingRow | null)?.mode ?? rec.mode ?? "skill";
+      const primaryRow = allFromResponse.find((s) => (s.kind ?? "skill") === recMode) ?? allFromResponse[0];
+      view = { kind: "skill", recording: (refreshed as RecordingRow) ?? rec, skill: primaryRow, allSkills: allFromResponse, autoDownloaded };
       render();
     }
   } catch (e) {
@@ -762,12 +779,41 @@ function skillView(rec: RecordingRow, skill: SkillRow | null, allSkills: SkillRo
     return d;
   }
 
-  // Version picker — only shown when there are 2+ versions and the viewer
-  // is admin (guests don't see skill content at all).
-  if (allSkills.length > 1) {
+  // Kind picker — every recording produces both a Skill and an
+  // Improvements brief. Show pills to switch between them when both exist.
+  const currentKind = (skill?.kind ?? "skill") as "skill" | "improvement";
+  const kindsAvailable = Array.from(new Set(allSkills.map((s) => (s.kind ?? "skill") as "skill" | "improvement")));
+  if (kindsAvailable.length > 1) {
+    const kindPicker = document.createElement("div");
+    kindPicker.className = "flex gap-1.5 mb-2";
+    const labels: Record<"skill" | "improvement", string> = {
+      skill: "Skill",
+      improvement: "Improvements",
+    };
+    for (const k of ["skill", "improvement"] as const) {
+      if (!kindsAvailable.includes(k)) continue;
+      const pill = document.createElement("button");
+      pill.className = `tab-pill${k === currentKind ? " active" : ""}`;
+      pill.textContent = labels[k];
+      pill.onclick = () => {
+        // Switch to the latest version of the selected kind.
+        const next = [...allSkills.filter((s) => (s.kind ?? "skill") === k)].sort((a, b) => b.version - a.version)[0];
+        if (next) {
+          view = { kind: "skill", recording: rec, skill: next, allSkills, autoDownloaded: false };
+          render();
+        }
+      };
+      kindPicker.appendChild(pill);
+    }
+    d.appendChild(kindPicker);
+  }
+
+  // Version picker — only versions of the currently-displayed kind.
+  const sameKind = allSkills.filter((s) => (s.kind ?? "skill") === currentKind);
+  if (sameKind.length > 1) {
     const picker = document.createElement("div");
     picker.className = "flex flex-wrap gap-1.5 mb-3";
-    for (const v of allSkills) {
+    for (const v of sameKind) {
       const pill = document.createElement("button");
       const active = skill && v.id === skill.id;
       pill.className = `tab-pill${active ? " active" : ""}`;
