@@ -57,6 +57,30 @@ async function getRecordingMode(): Promise<"skill" | "improvement"> {
 function isAdmin(): boolean { return true; }
 async function refreshRole(): Promise<void> { /* no-op while temp-admin */ }
 
+// ---- Runtime message listener (background → popup) ----
+
+chrome.runtime.onMessage.addListener((msg) => {
+  const m = msg as RuntimeMessage;
+  if (m.type === "popup:counts") {
+    // Update live counters in recording view without full re-render.
+    const evEl = document.getElementById("evcount");
+    const shEl = document.getElementById("shotcount");
+    if (evEl) evEl.textContent = `${m.event_count} events`;
+    if (shEl) shEl.textContent = `${m.shot_count} screenshots`;
+  } else if (m.type === "popup:recording_changed") {
+    // Refresh library cards if library is open.
+    if (view.kind === "idle" && view.tab === "library") {
+      loadLibraryData().then((data) => {
+        if (data) {
+          const list = document.getElementById("list");
+          if (list) renderCards(list, data);
+        }
+      });
+    }
+  }
+  return false;
+});
+
 // ---- Boot ----
 
 async function init(): Promise<void> {
@@ -1084,7 +1108,10 @@ function processingView(rec: RecordingRow, stage: "uploading" | "transcribing" |
       </div>
     ` : ""}
     ${error
-      ? `<button id="back" class="btn">Back to Library</button>`
+      ? `<div class="flex gap-2">
+           <button id="retry" class="btn btn-primary flex-1">Retry</button>
+           <button id="back" class="btn flex-1">Library</button>
+         </div>`
       : `<div class="glass p-3 flex items-start gap-2.5">
           <span style="color:#B68039;font-size:13px;flex-shrink:0;margin-top:1px;">ⓘ</span>
           <div class="text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.45);">You can close this popup — your skill saves to Downloads when it's ready. Reopen to pick up here.</div>
@@ -1102,6 +1129,11 @@ function processingView(rec: RecordingRow, stage: "uploading" | "transcribing" |
     d.querySelector<HTMLButtonElement>("#back")!.onclick = () => {
       view = { kind: "idle", tab: "library" };
       render();
+    };
+    d.querySelector<HTMLButtonElement>("#retry")!.onclick = () => {
+      view = { kind: "processing", recording: rec, stage: "uploading" };
+      render();
+      void runAutoGenerate(rec);
     };
   }
   return d;
@@ -1165,9 +1197,12 @@ function skillView(
     gen.innerHTML = `
       <div class="text-[13px] mb-3" style="color:#FFE8C7;">No skill generated yet.</div>
       <button id="gen" class="btn btn-primary w-full">Generate Skill</button>
-      <div id="genstatus" class="text-[11px] mt-2" style="color:rgba(255,232,199,0.55);"></div>
     `;
-    gen.querySelector<HTMLButtonElement>("#gen")!.onclick = () => generate(rec.id, gen);
+    gen.querySelector<HTMLButtonElement>("#gen")!.onclick = () => {
+      view = { kind: "processing", recording: rec, stage: "uploading" };
+      render();
+      void runAutoGenerate(rec);
+    };
     d.appendChild(gen);
     return d;
   }
@@ -1495,30 +1530,6 @@ function stripImageRefs(md: string): string {
   return md.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/[ \t]+\n/g, "\n");
 }
 
-async function generate(recordingId: string, container: HTMLElement, extra?: string): Promise<void> {
-  const status = container.querySelector<HTMLDivElement>("#genstatus") ?? container;
-  status.textContent = "Generating… 30–60s.";
-  try {
-    const auth = getAuthSupabase();
-    const db   = getDataSupabase();
-    const { data: sess } = await auth.auth.getSession();
-    const res = await fetch(functionUrl("generate-skill"), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${sess.session?.access_token ?? ""}`,
-      },
-      body: JSON.stringify({ recording_id: recordingId, extra }),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-    const skill = (await res.json()) as SkillRow;
-    const { data: rec } = await db.from("recordings").select("*").eq("id", recordingId).single();
-    view = { kind: "skill", recording: rec as RecordingRow, skill };
-    render();
-  } catch (e) {
-    status.textContent = `Error: ${(e as Error).message}`;
-  }
-}
 
 async function runDryRun(skill: SkillRow, container: HTMLElement): Promise<void> {
   const out = container.querySelector<HTMLPreElement>("#dryout")!;
