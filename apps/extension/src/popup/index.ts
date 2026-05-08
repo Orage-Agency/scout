@@ -501,7 +501,11 @@ function libraryTab(): HTMLElement {
   const renderList = (query: string) => {
     const q = query.toLowerCase().trim();
     const filtered = q
-      ? allRecordings.filter(r => (r.title || "").toLowerCase().includes(q))
+      ? allRecordings.filter(r => {
+          if ((r.title || "").toLowerCase().includes(q)) return true;
+          const body = (r.skills ?? []).map(s => s.body_md ?? "").join(" ").toLowerCase();
+          return body.includes(q);
+        })
       : allRecordings;
     renderCards(list, filtered);
   };
@@ -666,6 +670,21 @@ function settingsTab(): HTMLElement {
     </div>
 
     <div class="glass p-4">
+      <div class="label mb-3" style="font-size:9px;">Keyboard shortcut</div>
+      <div class="flex items-center justify-between">
+        <span class="text-[12px]" style="color:rgba(255,232,199,0.65);">Toggle recording</span>
+        <div style="display:flex;gap:4px;align-items:center;">
+          <span style="background:rgba(182,128,57,0.15);border:1px solid rgba(182,128,57,0.28);border-radius:4px;padding:2px 7px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#E4AF7A;">Alt</span>
+          <span style="color:rgba(255,232,199,0.35);font-size:10px;">+</span>
+          <span style="background:rgba(182,128,57,0.15);border:1px solid rgba(182,128,57,0.28);border-radius:4px;padding:2px 7px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#E4AF7A;">Shift</span>
+          <span style="color:rgba(255,232,199,0.35);font-size:10px;">+</span>
+          <span style="background:rgba(182,128,57,0.15);border:1px solid rgba(182,128,57,0.28);border-radius:4px;padding:2px 7px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#E4AF7A;">R</span>
+        </div>
+      </div>
+      <p class="text-[10px] mt-2" style="color:rgba(255,232,199,0.28);">Start or stop recording from any tab — no need to open the popup.</p>
+    </div>
+
+    <div class="glass p-4">
       <div class="label mb-1" style="font-size:9px;">Version</div>
       <div class="text-[12px]" style="color:rgba(255,232,199,0.45);">Scout v0.2.0 · Orage AI Agency</div>
     </div>
@@ -823,6 +842,22 @@ function extraContextView(rec: RecordingRow): HTMLElement {
       <p class="text-[10px]" style="color:rgba(255,232,199,0.32);">Cmd/Ctrl+Enter to submit.</p>
     </div>
   `;
+
+  // Short recording quality tip
+  if (rec.duration_ms && rec.duration_ms < 15000) {
+    const tip = document.createElement("div");
+    tip.className = "glass p-3";
+    tip.style.borderColor = "rgba(245,158,11,0.35)";
+    tip.innerHTML = `
+      <div class="flex items-start gap-2">
+        <span style="color:#F59E0B;flex-shrink:0;font-size:13px;">⚡</span>
+        <p class="text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.75);">
+          Short recording (${Math.round(rec.duration_ms / 1000)}s). For the best skill, try recording the full workflow with narration — even 30-60s makes a big difference.
+        </p>
+      </div>
+    `;
+    d.querySelector<HTMLTextAreaElement>("#ec")!.closest(".glass")?.before(tip);
+  }
 
   const ta   = d.querySelector<HTMLTextAreaElement>("#ec")!;
   const skip = d.querySelector<HTMLButtonElement>("#ec-skip")!;
@@ -1068,15 +1103,23 @@ function skillView(
   const meta = document.createElement("div");
   meta.className = "glass p-4 mb-3";
   const qScore = skill ? skillQualityScore(rec, skill) : null;
+  const wordCount = skill
+    ? skill.body_md
+        .replace(/^---[\s\S]*?---\n?/m, "")
+        .replace(/[#*`[\]()]/g, "")
+        .split(/\s+/).filter(Boolean).length
+    : 0;
+  const readMins = wordCount > 0 ? Math.ceil(wordCount / 200) : 0;
   meta.innerHTML = `
     <div class="display text-[17px] mb-1" style="color:#E4AF7A;">${escapeHtml(rec.title || "Untitled")}</div>
-    <div class="flex items-center gap-2 flex-wrap">
+    <div class="flex items-center gap-2 flex-wrap mb-1">
       <span class="text-[11px]" style="color:rgba(255,232,199,0.40);">
         ${escapeHtml(new Date(rec.started_at).toLocaleString(undefined, { month:"short", day:"numeric", hour:"numeric", minute:"2-digit" }))}
-        · ${rec.duration_ms ? Math.round(rec.duration_ms / 1000) + "s" : "—"}
+        · ${rec.duration_ms ? Math.round(rec.duration_ms / 1000) + "s recording" : "—"}
       </span>
       ${qScore ? `<span style="font-family:'Bebas Neue',sans-serif;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:${qScore.color};background:rgba(0,0,0,0.28);border:1px solid currentColor;border-radius:3px;padding:1px 5px;opacity:0.85;" title="Skill quality: ${qScore.score}/100">${qScore.label}</span>` : ""}
     </div>
+    ${wordCount > 0 ? `<div class="text-[10px]" style="color:rgba(255,232,199,0.28);">${wordCount} words · ${readMins} min read · v${skill?.version ?? 1}</div>` : ""}
   `;
   d.appendChild(meta);
 

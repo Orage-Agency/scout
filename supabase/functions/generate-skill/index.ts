@@ -449,30 +449,59 @@ function sampleScreenshots(
 }
 
 function summarizeEvents(events: Array<{ ts_ms: number; kind: string; data: Record<string, unknown> }>): string {
-  // Compress for the prompt — Claude doesn't need every scroll.
+  // Compress for the prompt — collapse consecutive character keystrokes so the
+  // LLM sees "[typed 12 chars]" rather than 12 individual keydown lines.
   const lines: string[] = [];
+  let typingCount = 0;
+  let typingStartT = 0;
+
+  const flushTyping = () => {
+    if (typingCount > 0) {
+      lines.push(`${typingStartT}s [typed ${typingCount} chars]`);
+      typingCount = 0;
+    }
+  };
+
   for (const e of events) {
     if (e.kind === "scroll") continue;
-    const t = `${Math.round(e.ts_ms / 1000)}s`;
-    if (e.kind === "click") {
+    const t = Math.round(e.ts_ms / 1000);
+    const ts = `${t}s`;
+
+    if (e.kind === "keydown") {
+      const key = String((e.data as Record<string, unknown>).key ?? "");
+      const mods = (e.data as { modifiers?: { alt: boolean; ctrl: boolean; meta: boolean } }).modifiers;
+      const hasModifier = mods && (mods.alt || mods.ctrl || mods.meta);
+      const isSpecial = key.length > 1; // "Enter", "Tab", "Escape", etc.
+      if (!hasModifier && !isSpecial) {
+        if (typingCount === 0) typingStartT = t;
+        typingCount++;
+        continue;
+      }
+      flushTyping();
+      lines.push(`${ts} keydown ${key}${hasModifier ? ` [mod]` : ""}`);
+    } else if (e.kind === "click") {
+      flushTyping();
       const tgt = (e.data?.target as { strategy: string; selector: string; visibleText?: string } | undefined);
-      lines.push(`${t} click ${tgt?.visibleText || tgt?.selector || "?"}`);
-    } else if (e.kind === "keydown") {
-      lines.push(`${t} keydown ${(e.data as Record<string, unknown>).key}`);
+      lines.push(`${ts} click ${tgt?.visibleText || tgt?.selector || "?"}`);
     } else if (e.kind === "paste") {
-      lines.push(`${t} paste "${((e.data as Record<string, unknown>).content_snippet as string) ?? ""}"`);
+      flushTyping();
+      lines.push(`${ts} paste "${((e.data as Record<string, unknown>).content_snippet as string) ?? ""}"`);
     } else if (e.kind === "navigation") {
-      lines.push(`${t} navigate -> ${(e.data as Record<string, unknown>).to_url}`);
+      flushTyping();
+      lines.push(`${ts} navigate -> ${(e.data as Record<string, unknown>).to_url}`);
     } else if (e.kind === "tab_switch") {
-      lines.push(`${t} tab_switch -> ${(e.data as Record<string, unknown>).to_tab_url}`);
+      flushTyping();
+      lines.push(`${ts} tab_switch -> ${(e.data as Record<string, unknown>).to_tab_url}`);
     } else {
-      lines.push(`${t} ${e.kind}`);
+      flushTyping();
+      lines.push(`${ts} ${e.kind}`);
     }
     if (lines.length > 200) {
       lines.push("…(truncated for prompt)");
       break;
     }
   }
+  flushTyping();
   return lines.join("\n");
 }
 
