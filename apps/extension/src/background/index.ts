@@ -559,9 +559,12 @@ async function runCoachCycle(): Promise<void> {
   if (state.ask_count >= MAX_ASKS_PER_RECORDING) return;
   if (state.last_ask_at && Date.now() - state.last_ask_at < MIN_ASK_GAP_MS) return;
 
-  // Read from coachRing — buffer gets emptied every 5s by flushBuffer, so
-  // by the time the 30s coach cycle fires the buffer is almost always empty.
+  // Read from coachRing — filter to events from the last 30s of recording time,
+  // so the coach sees a consistent 30s window regardless of total recording length.
+  const currentElapsed = Date.now() - state.started_at - state.paused_ms;
+  const windowStart = currentElapsed - 30_000;
   const recentEvents = coachRing
+    .filter((e) => e.ts_ms >= windowStart)
     .slice(-20)
     .map((e) => ({ kind: e.kind, ts_ms: e.ts_ms, data: e.data }));
   if (!recentEvents.length) {
