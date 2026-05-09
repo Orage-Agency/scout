@@ -4,35 +4,30 @@ Anything that stopped the autonomous build. Each entry: what, what was tried, wh
 
 ---
 
-## CRITICAL — Supabase PAT expired (2026-05-08)
+## CRITICAL — Supabase PAT expired (2026-05-08) — RESOLVED
 
-The PAT `sbp_665046f50d5b1954a25c95ecb10e4d2566326dc9` has expired. Edge function
-improvements accumulated since v0.1.5 (form_fill, copy content, context text,
-smarter truncation, wait-for clauses, coach copy handling) are in git but NOT yet
-deployed to `wmicxsafqbixedpjhchc`.
-
-**To fix:**
-1. Go to https://supabase.com/dashboard/account/tokens
-2. Create a new PAT named `scout-cli-deploy`
-3. In terminal: `$env:SUPABASE_ACCESS_TOKEN = "<new_pat>"`
-4. Run: `powershell -ExecutionPolicy Bypass -File scripts\deploy-edge-functions.ps1`
-
-The deploy script handles all three functions (coach, transcribe, generate-skill)
-in one shot and exits on first failure.
+A new PAT was minted in the 2026-05-08 session and all four functions
+(coach, transcribe, generate-skill, transcribe-chunk) were deployed to
+`wmicxsafqbixedpjhchc`.
 
 ---
 
 ## Open follow-ups (from 2026-05-07 v0.1.5 session)
 
-### Live transcription
+### Live transcription — RESOLVED (2026-05-08)
 
-The coach currently calls `/coach` with `transcript_tail: ""` because we only transcribe at recording stop. Live transcription would make the coach dramatically smarter mid-recording.
-
-Approach: stop+restart the offscreen MediaRecorder every 5s (each window becomes an independently decodable webm). New edge function `transcribe-chunk` takes the chunk, transcribes via Gemini, returns text. Service worker maintains an in-memory rolling `liveTranscript` (~1500 chars) and passes it as `transcript_tail` to `/coach`.
-
-Why deferred: getting MediaRecorder framing right (each window must include the EBML header) needs careful testing across Chrome versions and audio devices — not worth a half-baked first cut.
-
-Files to touch: `apps/extension/src/offscreen/index.ts`, `apps/extension/src/background/index.ts`, new `supabase/functions/transcribe-chunk/index.ts`. `coach/index.ts` already accepts `transcript_tail`.
+Implemented in v0.2.2:
+- `offscreen/index.ts`: two MediaRecorders on the same stream. `mainRecorder`
+  runs the full session for `audio_done`. `liveRecorder` cycles every 5 s;
+  each fresh instance starts with its own EBML header so every chunk is
+  independently decodable. Chunks sent as `offscreen:audio_chunk` (base64).
+- `background/index.ts`: `offscreen:audio_chunk` handler calls
+  `transcribe-chunk` edge function and appends returned text to a rolling
+  1500-char `live_transcript_tail` in session state. Passed to `/coach` calls
+  as `transcript_tail`.
+- `supabase/functions/transcribe-chunk/index.ts`: new edge function. Verifies
+  JWT, transcribes via Gemini 2.0 Flash through OpenRouter, returns `{ text }`.
+- Deploy script updated to include `transcribe-chunk` as the fourth function.
 
 ### OCR-based screenshot redaction
 

@@ -54,7 +54,7 @@ export interface RecordingSessionState {
   shot_count: number;  // live counter of events with a screenshot attached
   active_tab_title?: string | null;
   active_tab_url?: string | null;
-  live_transcript_tail?: string; // rolling 200-char buffer of Web Speech API results
+  live_transcript_tail?: string; // rolling 1500-char buffer of Gemini live transcription
 }
 
 export interface CoachAsk {
@@ -114,7 +114,7 @@ export type RuntimeMessage =
   | { type: "content:hide_control_bar" }
   | { type: "offscreen:start_audio" }
   | { type: "offscreen:stop_audio" }
-  | { type: "offscreen:audio_chunk"; chunk: ArrayBuffer; mimeType: string }
+  | { type: "offscreen:audio_chunk"; chunkB64: string; mimeType: string }
   | { type: "offscreen:audio_done"; bytesB64: string; byteLength: number; mimeType: string }
   | { type: "offscreen:audio_error"; error: string }
   | { type: "popup:generate_skill"; recording_id: string; extra?: string }

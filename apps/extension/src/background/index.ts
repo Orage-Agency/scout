@@ -1015,11 +1015,52 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse)
           sendResponse({ ok: true });
           break;
         }
+        case "offscreen:audio_chunk": {
+          // Fire-and-forget: transcribe in the background without blocking the
+          // message handler. A slow Gemini call here would delay the response
+          // to the offscreen doc and stall the next cycleChunk().
+          void (async () => {
+            const s = await loadSession();
+            if (!s || !s.mic_enabled) return;
+            const authClient = getAuthSupabase();
+            const { data: sess } = await authClient.auth.getSession();
+            if (!sess.session) return;
+            try {
+              const res = await fetch(functionUrl("transcribe-chunk"), {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  authorization: `Bearer ${sess.session.access_token}`,
+                },
+                body: JSON.stringify({
+                  audio_base64: msg.chunkB64,
+                  mime_type: msg.mimeType,
+                  recording_id: s.recording_id,
+                }),
+              });
+              if (!res.ok) { console.warn("[scout] transcribe-chunk non-OK", res.status); return; }
+              const { text } = (await res.json()) as { text: string };
+              if (!text) return;
+              const state = await loadSession();
+              if (!state) return;
+              const combined = ((state.live_transcript_tail ?? "") + " " + text).trim();
+              state.live_transcript_tail = combined.length > 1500 ? combined.slice(-1500) : combined;
+              await saveSession(state);
+              chrome.runtime
+                .sendMessage({ type: "popup:transcript_tail", tail: state.live_transcript_tail } satisfies RuntimeMessage)
+                .catch(() => {});
+            } catch (err) {
+              console.warn("[scout] transcribe-chunk error", err);
+            }
+          })();
+          sendResponse({ ok: true });
+          break;
+        }
         case "offscreen:live_transcript": {
           const s = await loadSession();
           if (s) {
             const combined = ((s.live_transcript_tail ?? "") + " " + msg.text).trim();
-            s.live_transcript_tail = combined.length > 200 ? combined.slice(-200) : combined;
+            s.live_transcript_tail = combined.length > 1500 ? combined.slice(-1500) : combined;
             await saveSession(s);
             chrome.runtime
               .sendMessage({ type: "popup:transcript_tail", tail: s.live_transcript_tail } satisfies RuntimeMessage)

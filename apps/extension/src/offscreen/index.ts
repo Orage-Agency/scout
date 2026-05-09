@@ -3,57 +3,64 @@
 
 import type { RuntimeMessage } from "../lib/types";
 
-let recorder: MediaRecorder | null = null;
+// mainRecorder runs the full session and feeds offscreen:audio_done at stop.
+// liveRecorder cycles every 5 s; each new instance starts fresh with an EBML
+// header, so each chunk is independently decodable. Both record from the same
+// stream simultaneously.
+let mainRecorder: MediaRecorder | null = null;
+let liveRecorder: MediaRecorder | null = null;
 let stream: MediaStream | null = null;
-let chunks: BlobPart[] = [];
+let mainChunks: BlobPart[] = [];
+let liveChunks: BlobPart[] = [];
 let chosenMime = "audio/webm;codecs=opus";
+let chunkTimer: ReturnType<typeof setInterval> | null = null;
+let isFinalStop = false;
 
-// Live speech-to-text via Web Speech API. Runs alongside MediaRecorder so the
-// background coach gets a rolling transcript tail without waiting for Whisper.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let recognition: any = null;
-
-function startSpeechRecognition(): void {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const SpeechRec = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
-  if (!SpeechRec) return;
-  try {
-    recognition = new SpeechRec();
-    recognition.continuous = true;
-    recognition.interimResults = false;
-    recognition.lang = "";
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    recognition.onresult = (e: any) => {
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) {
-          const text = e.results[i][0].transcript.trim();
-          if (text) {
-            chrome.runtime.sendMessage({ type: "offscreen:live_transcript", text } satisfies RuntimeMessage).catch(() => {});
-          }
-        }
-      }
-    };
-    recognition.onerror = () => { /* silent — mic denied, network error etc */ };
-    recognition.onend = () => {
-      // Auto-restart if still active (recognition stops on long silence).
-      if (recognition) {
-        try { recognition.start(); } catch { /* already stopped */ }
-      }
-    };
-    recognition.start();
-  } catch { /* SpeechRecognition not supported in this context */ }
+// Build a MediaRecorder whose ondataavailable always pushes into the given
+// buf array. The closure captures buf at creation time, so reassigning the
+// module-level variable later doesn't redirect data into the wrong array.
+function makeRecorder(s: MediaStream, buf: BlobPart[]): MediaRecorder {
+  const r = new MediaRecorder(s, { mimeType: chosenMime, audioBitsPerSecond: 96_000 });
+  r.ondataavailable = (e) => { if (e.data && e.data.size > 0) buf.push(e.data); };
+  return r;
 }
 
-function stopSpeechRecognition(): void {
-  if (recognition) {
-    recognition.onend = null; // disable auto-restart before stopping
-    try { recognition.stop(); } catch { /* ignore */ }
-    recognition = null;
-  }
+// Stop the current liveRecorder, send its audio as offscreen:audio_chunk, then
+// start a fresh one so the next chunk begins with its own EBML header.
+async function cycleChunk(): Promise<void> {
+  if (isFinalStop || !liveRecorder || !stream) return;
+
+  const prevRecorder = liveRecorder;
+  const prevChunks = liveChunks;
+
+  // Swap to new recorder before stopping old so no audio is dropped.
+  liveChunks = [];
+  const nextRecorder = makeRecorder(stream, liveChunks);
+  liveRecorder = nextRecorder;
+
+  await new Promise<void>((resolve) => {
+    prevRecorder.onstop = () => resolve();
+    if (prevRecorder.state !== "inactive") prevRecorder.stop();
+    else resolve();
+  });
+
+  if (isFinalStop) return;
+  nextRecorder.start(1000);
+
+  if (prevChunks.length === 0) return;
+  const blob = new Blob(prevChunks, { type: chosenMime });
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  if (bytes.byteLength === 0) return;
+  chrome.runtime.sendMessage({
+    type: "offscreen:audio_chunk",
+    chunkB64: uint8ToBase64(bytes),
+    mimeType: chosenMime,
+  } satisfies RuntimeMessage).catch(() => {});
 }
 
 async function start(): Promise<void> {
-  if (recorder) return;
+  if (mainRecorder) return;
+  isFinalStop = false;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (err) {
@@ -64,29 +71,34 @@ async function start(): Promise<void> {
     return;
   }
 
-  // Pick the best supported codec.
   const preferred = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
   chosenMime = preferred.find((m) => MediaRecorder.isTypeSupported(m)) ?? "audio/webm";
-  chunks = [];
-  recorder = new MediaRecorder(stream, { mimeType: chosenMime, audioBitsPerSecond: 96_000 });
-  recorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) chunks.push(e.data);
-  };
-  recorder.onerror = (e) => {
+  mainChunks = [];
+  liveChunks = [];
+
+  mainRecorder = makeRecorder(stream, mainChunks);
+  mainRecorder.onerror = (e) => {
     chrome.runtime.sendMessage({
       type: "offscreen:audio_error",
       error: String((e as { error?: { message?: string } }).error?.message ?? "MediaRecorder error"),
     } satisfies RuntimeMessage);
   };
-  recorder.start(1000); // emit a chunk every 1s so we don't lose much on crash
-  startSpeechRecognition();
+  mainRecorder.start(1000);
+
+  liveRecorder = makeRecorder(stream, liveChunks);
+  liveRecorder.start(1000);
+
+  chunkTimer = setInterval(() => void cycleChunk(), 5000);
 }
 
 async function stop(): Promise<void> {
-  if (!recorder) {
-    // No mic / permission denied / start() failed. Still notify the service
-    // worker so the recording can be finalized — otherwise it gets stuck at
-    // status='uploading' forever waiting for audio that will never arrive.
+  isFinalStop = true;
+  if (chunkTimer != null) {
+    clearInterval(chunkTimer);
+    chunkTimer = null;
+  }
+
+  if (!mainRecorder) {
     chrome.runtime.sendMessage({
       type: "offscreen:audio_done",
       bytesB64: "",
@@ -95,23 +107,23 @@ async function stop(): Promise<void> {
     } satisfies RuntimeMessage);
     return;
   }
-  stopSpeechRecognition();
-  // Release the mic FIRST so Chrome's recording indicator clears immediately
-  // and no further audio is captured. Stopping the tracks while the recorder
-  // is still active causes the recorder to fire its final 'dataavailable'
-  // event with the buffered audio, then 'stop' — same as calling
-  // recorder.stop() explicitly, but the user-visible "mic on" state ends now
-  // instead of after the recorder finalizes.
+
+  // Stop the live recorder; we don't need its partial chunk for the final audio.
+  const lr = liveRecorder;
+  liveRecorder = null;
+  if (lr && lr.state !== "inactive") lr.stop();
+
+  // Release the mic so Chrome's recording indicator clears immediately.
   stream?.getTracks().forEach((t) => t.stop());
+
   await new Promise<void>((resolve) => {
-    recorder!.onstop = () => resolve();
-    if (recorder!.state !== "inactive") recorder!.stop();
+    mainRecorder!.onstop = () => resolve();
+    if (mainRecorder!.state !== "inactive") mainRecorder!.stop();
+    else resolve();
   });
-  const blob = new Blob(chunks, { type: chosenMime });
+
+  const blob = new Blob(mainChunks, { type: chosenMime });
   const bytes = new Uint8Array(await blob.arrayBuffer());
-  // chrome.runtime.sendMessage between offscreen and the service worker
-  // strips ArrayBuffer to {} in some Chrome builds. Base64 the payload so
-  // it survives the IPC boundary intact.
   const bytesB64 = uint8ToBase64(bytes);
   chrome.runtime.sendMessage({
     type: "offscreen:audio_done",
@@ -119,13 +131,14 @@ async function stop(): Promise<void> {
     byteLength: bytes.byteLength,
     mimeType: chosenMime,
   } satisfies RuntimeMessage);
-  recorder = null;
+
+  mainRecorder = null;
   stream = null;
-  chunks = [];
+  mainChunks = [];
+  liveChunks = [];
 }
 
 function uint8ToBase64(buf: Uint8Array): string {
-  // Chunked btoa to avoid call-stack blowups on multi-MB payloads.
   const CHUNK = 0x8000;
   let s = "";
   for (let i = 0; i < buf.length; i += CHUNK) {

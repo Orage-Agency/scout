@@ -21,7 +21,7 @@ if (-not $env:SUPABASE_ACCESS_TOKEN) {
   exit 1
 }
 
-$Functions = @("coach", "transcribe", "generate-skill")
+$Functions = @("coach", "transcribe", "generate-skill", "transcribe-chunk")
 
 foreach ($fn in $Functions) {
   Write-Host "`nDeploying $fn..." -ForegroundColor Cyan
