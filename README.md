@@ -1,38 +1,72 @@
 # Scout v1
 
-> **Latest update (v0.1.6)** — Three things changed:
-> 1. **Library always loads** — recordings no longer go missing when you reopen the extension.
-> 2. **Mic is now optional** — toggle voice narration on or off before you start recording. Your choice is remembered.
-> 3. **Popup never crashes** — the extension now opens cleanly even in dev builds without a configured backend.
+> **Latest update (v0.2.2)** — The coach now hears you in real-time.
+> While you record with your mic on, Scout transcribes your voice every 5 seconds
+> and passes the running transcript to the coaching engine. The questions it surfaces
+> are dramatically more relevant because it knows what you just said, not just what
+> you clicked.
 
 A Chrome extension that captures human workflows and turns them into structured `SKILL.md` files for AI agents.
 
 ---
 
+## What's new in v0.2.2
+
+### The coach now listens while you record
+
+Previously, the coaching assistant only knew what you clicked — it had no idea what you were saying. Starting in v0.2.2, Scout transcribes your voice every 5 seconds while you record and feeds that running transcript to the coach.
+
+In practice this means:
+- If you say "I'm picking this option because of the SLA requirement" and then click something, the coach knows why you made that choice. It won't ask you to explain it.
+- If you go quiet for a while and the coach does ask a question, the question is shaped by everything you've narrated so far — not just the last 30 seconds of clicks.
+- The transcript tail is capped at 1500 characters (rolling window), so the coach always sees recent context without getting overwhelmed.
+
+**This only activates when Voice narration is ON.** If you've turned mic off, nothing changes.
+
+### How it works (for the technically curious)
+
+Scout runs two `MediaRecorder` instances on the same audio stream:
+
+- **Main recorder** — runs the full session, produces the audio file uploaded for final transcription at the end.
+- **Live recorder** — stops and restarts every 5 seconds. Each fresh start writes a new EBML header, making every 5-second window an independently decodable WebM file. Each chunk goes to a new `transcribe-chunk` Edge Function backed by Gemini 2.0 Flash via OpenRouter. The returned text is appended to the rolling transcript tail.
+
+---
+
+## What's new in v0.2.1
+
+### Improvement mode
+
+Alongside the original skill-capture mode, Scout now supports **Improvement mode** — record a session showing something that's confusing or broken, and the output is a structured **Change Brief** (a friction-focused critique ready to paste into Claude Code) instead of a `SKILL.md`.
+
+Switch modes in the popup before you start recording. The coaching tips adjust too: in Improvement mode the coach prompts you to call out confusion, name broken components, and describe what you expected to happen instead.
+
+### Prompt caching
+
+The coaching and skill-generation Edge Functions now send the `anthropic-beta: prompt-caching-2024-07-31` header and mark their system prompts with `cache_control: { type: "ephemeral" }`. Repeated calls within 5 minutes pay roughly 10% of the normal input-token price.
+
+---
+
+## What's new in v0.2.0
+
+### Real-time coaching improvements
+
+- **Coach ring buffer** — the coach now reads from a 40-event ring buffer that survives the 5-second flush cycle. Previously, if a flush happened right before the 30-second coach tick, the coach saw zero events and stayed silent. Fixed.
+- **Typed replies to coach questions** — the in-page toast now has a text input. Your answer gets saved as a `coach_reply` event, woven into the skill file.
+- **Form-fill capture** — leaving a text field after typing now records a `form_fill` event with the field label and (redacted) value, giving the LLM cleaner action context.
+- **SPA navigation** — React Router / Next.js / Vue Router route changes are caught via `onHistoryStateUpdated` with a 500ms debounce.
+- **Live capture feed** — the popup shows the last 4 meaningful actions as they happen (click target, paste snippet, form fill, navigation).
+
+### PII redaction additions
+
+US phone numbers, API keys (`sk-`, `ghp_`, `sbp_`, `AKIA`, `AIza`), and long hex secrets are now redacted before any data leaves the browser.
+
+---
+
 ## What's new in v0.1.6
 
-### Your recordings now follow you everywhere
-
-Before this update, the Library tab could show up empty even though your recordings were safely saved. This happened because of a timing glitch when the extension first opened — it would try to load your recordings before it had finished logging you in behind the scenes. That's fixed. Now your full recording history loads correctly every time you open the extension, on any device, as long as you're signed in with the same account.
-
-### You can now choose whether to use your microphone
-
-There's a new **Voice narration ON/OFF toggle** on the Record tab, right below the big record button.
-
-- **ON (default):** Scout records your mic while you work. Talk through what you're doing — "I'm filtering by this date because…", "I always check this field first" — and that narration gets transcribed and woven into the skill file. The more you explain, the smarter the output.
-- **OFF:** Scout records only your clicks, keystrokes, and screenshots. No mic, no audio file, no transcription step. The skill still gets generated, just from actions alone.
-
-Your choice is saved. You don't have to set it every time.
-
-**How you can tell what's happening:**
-
-| Where | What you see |
-|---|---|
-| Record tab | Toggle showing ON or OFF |
-| Recording view (popup) | 🎙 **live** (pulsing green) · 🎙 **off** · 🎙 **denied** |
-| Floating bar (in the page) | 🎙 icon appears and gently pulses while mic is active |
-
-When the mic is off, recording stops faster too — it skips the audio upload and transcription wait entirely and jumps straight to generating your skill.
+- **Library always loads** — recordings no longer go missing when you reopen the extension.
+- **Mic is now optional** — toggle voice narration on or off before you start recording. Your choice is remembered.
+- **Popup never crashes** — the extension now opens cleanly even in dev builds without a configured backend.
 
 ---
 
@@ -51,21 +85,21 @@ Privacy policy: <https://gist.github.com/Orage-Agency/788e7dcf7a0ec71c5e9bf74387
 
 ## Architecture
 
-- **Chrome MV3 extension** (`apps/extension`) — service worker (recording session manager), content scripts (per-tab event listeners), offscreen document (`MediaRecorder` for audio), popup UI.
+- **Chrome MV3 extension** (`apps/extension`) — service worker (recording session manager), content scripts (per-tab event listeners), offscreen document (two `MediaRecorder` instances: one full-session, one cycling every 5 s for live transcription), popup UI.
 - **Two Supabase projects** (since v0.1.4):
   - **Auth (universal)** — shared identity hub across Orage apps. Owns `auth.users` and the session lifecycle. The extension calls `signIn` / `signUp` / `signOut` here.
-  - **Data (Scout)** — owns `recordings`, `events`, `skills`, storage buckets, and the three Edge Functions. Receives the access token issued by the auth project.
-- **Anthropic API** — called only from Edge Functions. The extension never holds the key.
+  - **Data (Scout)** — owns `recordings`, `events`, `skills`, storage buckets, and the four Edge Functions. Receives the access token issued by the auth project.
+- **OpenRouter** — all LLM calls route through OpenRouter. Coach uses Claude Haiku (cheap, fast, fires every 30 s). Full transcription and skill generation use Claude Sonnet. Live chunk transcription uses Gemini 2.0 Flash (audio-native, low latency). Model overrides via Supabase secrets.
 
 ### Universal login (optional)
 
 The extension uses two Supabase clients (`getAuthSupabase()` and `getDataSupabase()` in `apps/extension/src/lib/supabase.ts`). The auth client owns the session; the data client mirrors it via `setSession()` whenever auth state changes.
 
-**Single-project mode (default)** — leave `VITE_AUTH_SUPABASE_*` blank in `.env`. Both clients point at the data project; users live in the data project's `auth.users`; RLS works natively. This is what Scout v0.1.4 ships with today.
+**Single-project mode (default)** — leave `VITE_AUTH_SUPABASE_*` blank in `.env`. Both clients point at the data project; users live in the data project's `auth.users`; RLS works natively.
 
 **Dual-project mode** — set `VITE_AUTH_SUPABASE_URL` and `VITE_AUTH_SUPABASE_ANON_KEY` to a separate "universal" Supabase project. Other Orage apps point at the same auth project so a single login works everywhere. Three additional steps required:
 1. Copy the **JWT Secret** from the auth project (Settings → API → JWT Settings) into the data project's JWT Secret field. Without this, every data-project query returns 401.
-2. Apply migration `0002_universal_auth.sql` against the data project — drops FKs from `recordings/events/skills/profiles → auth.users` (the universal user UUIDs are foreign to the data project's `auth.users`) and removes the local signup trigger.
+2. Apply migration `0002_universal_auth.sql` against the data project — drops FKs from `recordings/events/skills/profiles → auth.users` and removes the local signup trigger.
 3. Set Edge Function secrets `AUTH_SUPABASE_URL` and `AUTH_SUPABASE_ANON_KEY` so the functions verify caller identity against the auth project.
 
 ## Setup (one-time, ~5 minutes)
@@ -78,10 +112,7 @@ If the [Supabase MCP](https://supabase.com/docs/guides/getting-started/mcp) is c
 2. Name: `scout`. Region: `us-east-1`. Generate and save a strong DB password.
 3. Wait for provisioning (~2 min).
 4. Settings → API → copy the **Project URL**, the **anon** key, and the **service_role** key.
-5. In the project: **Storage** → create three private buckets:
-   - `screenshots`
-   - `audio`
-   - `skills` (optional)
+5. In the project: **Storage** → create three private buckets: `screenshots`, `audio`, `skills`.
 
 ### 2. Configure `.env`
 
@@ -104,28 +135,39 @@ Then in the Supabase dashboard, copy the **JWT Secret** from the auth project (S
 pnpm install
 pnpm exec supabase login                    # interactive — opens browser
 pnpm exec supabase link --project-ref <ref>
-pnpm exec supabase db push                  # applies migrations 0001_initial.sql + 0002_universal_auth.sql
+pnpm exec supabase db push                  # applies all migrations
 ```
 
 ### 4. Set the Edge Function secrets
 
 ```bash
-# OpenRouter key (Edge Functions route LLM calls through OpenRouter).
+# OpenRouter key — all LLM calls route through OpenRouter.
 pnpm exec supabase secrets set OPENROUTER_API_KEY=sk-or-v1-...
 
-# Universal auth project URL + anon key. Edge Functions verify caller
-# identity against this project (since v0.1.4) — without these, every
-# function returns 401.
+# Universal auth project (required for all four Edge Functions to verify JWTs).
 pnpm exec supabase secrets set AUTH_SUPABASE_URL=https://YOUR_AUTH_PROJECT_REF.supabase.co
 pnpm exec supabase secrets set AUTH_SUPABASE_ANON_KEY=...
+
+# Optional: override the Gemini model used for live chunk transcription.
+# pnpm exec supabase secrets set LLM_MODEL_TRANSCRIBE_CHUNK=google/gemini-2.0-flash-001
 ```
 
 ### 5. Deploy the Edge Functions
+
+The deploy script handles all four functions in one shot and exits on first failure. Generate a PAT at <https://supabase.com/dashboard/account/tokens>, then:
+
+```powershell
+$env:SUPABASE_ACCESS_TOKEN = "<your-pat>"
+powershell -ExecutionPolicy Bypass -File scripts\deploy-edge-functions.ps1
+```
+
+Or deploy individually:
 
 ```bash
 pnpm exec supabase functions deploy coach
 pnpm exec supabase functions deploy transcribe
 pnpm exec supabase functions deploy generate-skill
+pnpm exec supabase functions deploy transcribe-chunk
 ```
 
 ### 6. Build the extension and load it
@@ -138,11 +180,11 @@ pnpm build
 
 ## Recording your first workflow
 
-1. Click the Scout icon → enter your email → click the magic-link in your inbox.
-2. Click **Start Recording**. Chrome will prompt for screen + microphone permission once.
+1. Click the Scout icon → enter your email → enter the 6-digit OTP from your inbox.
+2. Click **Start Recording**. Chrome will prompt for microphone permission once (if Voice narration is ON).
 3. A floating control bar appears in the top-right of every tab. It survives tab switches and SPA navigation.
-4. Perform the task. Narrate as you go. Scout may surface a small toast in the bottom-right with a clarifying question — answer it out loud or click **Skip**.
-5. Click **Stop**. Within ~60s the recording lands in **Library** with status `ready`.
+4. Perform the task. Narrate as you go — Scout transcribes your voice live every 5 seconds and uses it to ask smarter coaching questions. The in-page coach may surface a small toast with a question; answer it by typing or clicking **Skip**.
+5. Click **Stop**. Within ~60 s the recording lands in **Library** with status `ready`.
 
 ## Generating a skill file
 
@@ -150,43 +192,52 @@ pnpm build
 2. Click **Generate Skill**. A side panel renders the resulting `SKILL.md`.
 3. Use **Download .md**, **Copy**, or **Regenerate** (with optional extra guidance) as needed.
 
+For **Improvement mode** recordings, the output is a **Change Brief** — a friction-focused markdown critique ready to paste into Claude Code.
+
 ## Privacy
 
-- Password fields, credit-card numbers, emails (in keystrokes), SSNs, and EINs are redacted **before** any data leaves the browser.
+- Password fields, credit-card numbers, emails (in keystrokes), SSNs, EINs, US phone numbers, and common API key formats are redacted **before** any data leaves the browser.
 - Screenshot OCR-redaction is **not** in v1 — visible on-screen PII is captured. Don't record sensitive surfaces.
 - Incognito tabs aren't captured (extensions don't run there by default).
 - A red dot in the in-page control bar makes recording state visible at all times.
 
 ## Troubleshooting
 
-- **"Could not start recording. Are you signed in?"** — the popup couldn't find a Supabase session; sign in again from the popup.
-- **No coaching toasts ever appear** — `ANTHROPIC_API_KEY` is probably not set in Edge Function secrets. Run the command in Setup §4.
-- **Screenshots missing on `chrome://` or `about:` pages** — Chrome blocks `captureVisibleTab` on those URLs. The recording continues; only those events get a `screenshot_path = null`.
-- **Service worker stopped during a long recording** — chrome.storage.session restores it on the next event. If something looks wrong, reload the extension and check `chrome://extensions/?errors`.
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| "Could not start recording. Are you signed in?" | No Supabase session | Sign in again from the popup |
+| No coaching toasts ever appear | `OPENROUTER_API_KEY` not set | `supabase secrets set OPENROUTER_API_KEY=...` and redeploy |
+| Live transcript tail stays empty | `transcribe-chunk` not deployed | Run the deploy script; confirm the function appears in the Supabase dashboard |
+| Screenshots missing on `chrome://` pages | Chrome blocks `captureVisibleTab` there | Expected — recording continues, those events get `screenshot_path = null` |
+| Service worker stopped mid-recording | Chrome hibernated the SW | `chrome.storage.session` restores state on next event; check `chrome://extensions/?errors` |
 
 ## Repo layout
 
 ```
 scout/
-├── apps/extension/      # MV3 extension (Vite + TS + Tailwind + crxjs plugin)
+├── apps/extension/      # MV3 extension (Vite + TS + Tailwind)
 │   ├── src/
-│   │   ├── background/  # service worker
-│   │   ├── content/     # per-tab event listeners + control bar + toast
-│   │   ├── offscreen/   # MediaRecorder host
+│   │   ├── background/  # service worker — session state, flush, coach loop
+│   │   ├── content/     # per-tab event listeners, control bar, coach toast
+│   │   ├── offscreen/   # dual MediaRecorder host (full-session + 5-s live chunks)
 │   │   ├── popup/       # auth, library, recording state, skill side-panel
-│   │   ├── lib/         # supabase client, types, selector, redaction, queue, ids
-│   │   └── manifest.json
+│   │   └── lib/         # supabase clients, types, selector, redaction, queue, ids
 │   └── ...
 ├── supabase/
-│   ├── migrations/0001_initial.sql  # tables, RLS, profile trigger, bucket policies
+│   ├── migrations/      # 0001_initial.sql  0002_universal_auth.sql  0003_admin_role.sql
 │   └── functions/
-│       ├── _shared/     # anthropic + supabase helpers
-│       ├── coach/       # /coach
-│       ├── transcribe/  # /transcribe
-│       └── generate-skill/  # /generate-skill
+│       ├── _shared/     # llm.ts (OpenRouter + Anthropic)  supabase.ts (auth + CORS)
+│       ├── coach/           # /coach — 30-s coaching tick
+│       ├── transcribe/      # /transcribe — full-recording audio → segments JSON
+│       ├── transcribe-chunk/# /transcribe-chunk — live 5-s chunk → plain text
+│       └── generate-skill/  # /generate-skill — SKILL.md or Change Brief
+├── scripts/
+│   ├── deploy-edge-functions.ps1  # deploys all four functions in one shot
+│   ├── dev-chrome.ps1             # launches Chrome with the extension preloaded
+│   └── start-scout.ps1
 ├── docs/SKILL_TEMPLATE.md
-├── tests/smoke.spec.ts  # Playwright end-to-end
-├── BUILD_LOG.md DECISIONS.md BLOCKERS.md
+├── tests/               # Playwright end-to-end and smoke tests
+├── BUILD_LOG.md  DECISIONS.md  BLOCKERS.md
 └── README.md
 ```
 
@@ -198,9 +249,10 @@ scout/
 | `pnpm build` | Build the extension into `apps/extension/dist` |
 | `pnpm typecheck` | TypeScript without emitting |
 | `pnpm db:push` | Apply migrations to the linked Supabase project |
-| `pnpm functions:deploy` | Deploy all three Edge Functions |
 | `pnpm test:smoke` | Run the Playwright smoke test |
+| `scripts\deploy-edge-functions.ps1` | Deploy all four Edge Functions (requires `SUPABASE_ACCESS_TOKEN`) |
+| `scripts\dev-chrome.ps1` | Open a dedicated Chrome with the extension preloaded |
 
 ## Status
 
-v0.1.0 — capture + context only. No replay/execution. See the brief's "What v1 does (and does not)" matrix for the full scope.
+v0.2.2 — live Gemini transcription, dual-mode recording (skill + improvement), real-time coach ring buffer, typed coach replies, form-fill capture, SPA navigation, PII redaction improvements. No replay/execution engine. See the brief's "What v1 does (and does not)" matrix for the full scope.
