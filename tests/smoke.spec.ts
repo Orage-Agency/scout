@@ -24,6 +24,8 @@ test.beforeAll(async () => {
       `--load-extension=${EXT_DIR}`,
       "--no-first-run",
       "--no-default-browser-check",
+      // Required in Linux CI (Docker/sandboxed) environments.
+      ...(process.env.CI ? ["--no-sandbox", "--disable-setuid-sandbox"] : []),
     ],
   });
 });
