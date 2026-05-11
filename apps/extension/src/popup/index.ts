@@ -186,7 +186,7 @@ function compactHeader(): HTMLElement {
   h.innerHTML = `
     <div class="flex items-baseline gap-2">
       <span class="display text-[26px]">SCOUT</span>
-      <span class="label" style="font-size:8px;opacity:0.55;">v0.2.0</span>
+      <span class="label" style="font-size:8px;opacity:0.55;">v0.2.2</span>
     </div>
     <span class="label" style="font-size:8px;opacity:0.38;">Orage AI</span>
   `;
@@ -326,6 +326,52 @@ function idleView(tab: "record" | "library" | "settings"): HTMLElement {
   return settingsTab();
 }
 
+// ---- PII acknowledgement modal ----
+// Shown once before the first recording. Resolves true if the user confirms,
+// false if they dismiss. Injects a full-screen overlay into #app and cleans
+// itself up. Screenshot OCR redaction is not in v1 — this modal is the
+// user-visible disclosure for that gap.
+function showPiiAckModal(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = [
+      "position:fixed;inset:0;z-index:9999;",
+      "background:rgba(0,0,0,0.82);backdrop-filter:blur(6px);",
+      "display:flex;align-items:center;justify-content:center;padding:20px;",
+    ].join("");
+
+    overlay.innerHTML = `
+      <div class="glass" style="max-width:320px;width:100%;padding:22px 20px;display:flex;flex-direction:column;gap:14px;">
+        <div class="display text-[17px]" style="color:#E4AF7A;">Before you start</div>
+        <p class="text-[12px] leading-relaxed" style="color:rgba(255,232,199,0.75);">
+          Scout captures <strong style="color:#FFE8C7;">screenshots</strong> of your screen while recording.
+          Text visible on screen — including any personal data — may be captured and sent to
+          Scout's AI backend.
+        </p>
+        <p class="text-[12px] leading-relaxed" style="color:rgba(255,232,199,0.55);">
+          <strong style="color:#FFE8C7;">Don't record sensitive surfaces</strong> — passwords,
+          banking pages, private messages, or anything with confidential data.
+        </p>
+        <div class="flex gap-2">
+          <button id="ack-cancel" class="btn flex-1 text-[12px]">Cancel</button>
+          <button id="ack-ok" class="btn btn-primary flex-1 text-[12px]">I understand, record</button>
+        </div>
+        <p class="text-[10px]" style="color:rgba(255,232,199,0.28);text-align:center;">
+          Shown once. See <a href="https://orage-agency.github.io/scout/privacy/" target="_blank" style="color:#B68039;">privacy policy</a>.
+        </p>
+      </div>
+    `;
+
+    const cleanup = (result: boolean) => {
+      overlay.remove();
+      resolve(result);
+    };
+    overlay.querySelector<HTMLButtonElement>("#ack-ok")!.onclick     = () => cleanup(true);
+    overlay.querySelector<HTMLButtonElement>("#ack-cancel")!.onclick  = () => cleanup(false);
+    document.body.appendChild(overlay);
+  });
+}
+
 // ---- Record tab ----
 
 function recordTab(): HTMLElement {
@@ -453,8 +499,17 @@ function recordTab(): HTMLElement {
     }
   });
 
-  // Record button
+  // Record button — shows a one-time PII acknowledgement before the first
+  // recording. Chrome cannot redact on-screen text in screenshots (OCR would
+  // add ~3 MB to the bundle). The user must confirm they understand this.
+  const PII_ACK_KEY = "scout:pii_ack";
   d.querySelector<HTMLButtonElement>("#rec")!.onclick = async () => {
+    const ackStore = await chrome.storage.local.get(PII_ACK_KEY);
+    if (!ackStore[PII_ACK_KEY]) {
+      const confirmed = await showPiiAckModal();
+      if (!confirmed) return;
+      await chrome.storage.local.set({ [PII_ACK_KEY]: true });
+    }
     const micEnabled = await getMicEnabled();
     const mode       = await getRecordingMode();
     const tier       = await getTier();
@@ -746,7 +801,13 @@ function settingsTab(): HTMLElement {
 
     <div class="glass p-4">
       <div class="label mb-1" style="font-size:9px;">Version</div>
-      <div class="text-[12px]" style="color:rgba(255,232,199,0.45);">Scout v0.2.0 · Orage AI Agency</div>
+      <div class="text-[12px]" style="color:rgba(255,232,199,0.45);">Scout v0.2.2 · Orage AI Agency</div>
+    </div>
+
+    <div class="glass p-4">
+      <div class="label mb-2" style="font-size:9px;">Support</div>
+      <button id="report-problem" class="btn w-full text-[12px]">Report a problem</button>
+      <p class="text-[10px] mt-2 leading-relaxed" style="color:rgba(255,232,199,0.32);">Opens a prefilled email with your extension version and last error. No PII is included.</p>
     </div>
   `;
 
@@ -811,6 +872,24 @@ function settingsTab(): HTMLElement {
     if (!u.user) return;
     await db.from("recordings").delete().eq("user_id", u.user.id);
     alert("Deleted.");
+  };
+
+  d.querySelector<HTMLButtonElement>("#report-problem")!.onclick = async () => {
+    const manifest = chrome.runtime.getManifest();
+    const { data: u } = await auth.auth.getUser();
+    const lastErr = (await chrome.storage.local.get("scout:last_error"))["scout:last_error"] ?? "none";
+    const recentId = (await chrome.storage.local.get("scout:recent_recording_id"))["scout:recent_recording_id"] ?? "none";
+    const body = [
+      `Extension version: ${manifest.version}`,
+      `User: ${u.user?.email ?? "not signed in"}`,
+      `Recent recording: ${recentId}`,
+      `Last error: ${lastErr}`,
+      "",
+      "Describe what happened:",
+      "",
+    ].join("\n");
+    const mailto = `mailto:team@orage.agency?subject=${encodeURIComponent("Scout bug report v" + manifest.version)}&body=${encodeURIComponent(body)}`;
+    chrome.tabs.create({ url: mailto });
   };
 
   return d;

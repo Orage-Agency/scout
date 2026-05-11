@@ -81,12 +81,17 @@ function summarizeCoachEvents(
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders() });
+  const reqId = crypto.randomUUID().slice(0, 8);
+  const t0 = Date.now();
   try {
     // Auth gate: any logged-in user. Verified against the universal auth project.
     const user = await verifyAuthUser(req.headers.get("authorization"));
-    if (!user) return json({ ask: null }, 401);
+    if (!user) { console.warn(`[coach ${reqId}] unauthorized`); return json({ ask: null }, 401); }
+    console.log(`[coach ${reqId}] user=${user.id}`);
 
-    const body = (await req.json()) as CoachReq;
+    let body: CoachReq;
+    try { body = (await req.json()) as CoachReq; }
+    catch { return json({ ask: null, error: "invalid_json" }, 400); }
     if ((body.ask_count ?? 0) >= 6) return json({ ask: null });
 
     const eventSummary = summarizeCoachEvents(body.events);
@@ -127,9 +132,10 @@ Questions asked so far: ${body.ask_count ?? 0}`;
     } else {
       parsed.ask = null;
     }
+    console.log(`[coach ${reqId}] done ask=${!!parsed.ask} ms=${Date.now() - t0}`);
     return json(parsed);
   } catch (err) {
-    console.error("[coach]", err);
+    console.error(`[coach ${reqId}] error ms=${Date.now() - t0}`, err);
     return json({ ask: null, error: String((err as Error).message) }, 500);
   }
 });

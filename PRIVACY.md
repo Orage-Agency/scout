@@ -1,6 +1,6 @@
 # Scout — Privacy Policy
 
-_Last updated: 2026-05-02_
+_Last updated: 2026-05-11_
 
 Scout is a Chrome extension that records workflows you perform in your browser
 and turns them into structured `SKILL.md` files that an AI agent can later

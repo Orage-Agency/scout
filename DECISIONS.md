@@ -13,8 +13,8 @@ The user's working directory was `C:\Users\georg`; created `scout/` directly und
 ## D3 — No global `pnpm exec` for Supabase migrations until project credentials exist
 Supabase MCP is not connected in this environment, so the project itself cannot be auto-provisioned. Migrations and edge function code are written and committed; the user runs `supabase link` + `pnpm db:push` once they have created the project. Documented in BLOCKERS.md and README.md.
 
-## D4 — ANTHROPIC_API_KEY treated as an Edge Function secret, never as a Vite env
-The brief explicitly says keys never live in the extension. The `coach`, `transcribe`, and `generate-skill` Edge Functions read it via `Deno.env.get("ANTHROPIC_API_KEY")`, set once via `supabase secrets set`. The extension calls the Edge Functions with the user's Supabase JWT.
+## D4 — LLM API key is an Edge Function secret, never a Vite env
+Keys never live in the extension. `_shared/llm.ts` reads `ANTHROPIC_API_KEY` first (direct Anthropic API) and falls back to `OPENROUTER_API_KEY` (OpenRouter). In production we set `OPENROUTER_API_KEY` via `supabase secrets set` — it routes through OpenRouter so we can swap models without code changes. The extension calls Edge Functions with the user's Supabase JWT; no key ever reaches the browser.
 
 ## D5 — Vanilla TS popup, no React
 Per Operating Rule 1.5 (prefer simple). The popup is small enough that the cost of a framework outweighs the benefit. Tailwind handles styling; routing is a tiny hash-based switch.

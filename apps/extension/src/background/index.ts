@@ -38,6 +38,14 @@ function pushCoachRing(ev: CapturedEvent): void {
 let flushTimer: number | null = null;
 let coachTimer: number | null = null;
 
+// Exponential backoff for flush failures. Tracks consecutive upload errors so
+// we don't hammer a down Supabase endpoint every 5 s. Resets to 0 on any
+// successful flush. nextFlushAllowedAt is epoch ms; flushBuffer() returns
+// early if called before it.  Both are in-memory only — intentionally reset
+// if the worker is killed (a fresh wake gets a clean slate).
+let flushFailCount = 0;
+let nextFlushAllowedAt = 0;
+
 async function loadSession(): Promise<RecordingSessionState | null> {
   const v = await chrome.storage.session.get(SESSION_KEY);
   return (v[SESSION_KEY] as RecordingSessionState) ?? null;
@@ -534,10 +542,13 @@ function shouldCaptureForEvent(ev: CapturedEvent): boolean {
 
 async function flushBuffer(): Promise<void> {
   if (buffer.length === 0) return;
+  // Backoff guard: skip this tick if a previous failure set a cooldown.
+  if (Date.now() < nextFlushAllowedAt) return;
   const state = await loadSession();
   if (!state) return;
 
-  // Drain anything previously queued first (FIFO).
+  // Drain anything previously queued first (FIFO). A drain failure is treated
+  // the same as a new flush failure — the items stay in IndexedDB for next time.
   await drainEvents(async (rows) => {
     await uploadEvents(rows as CapturedEvent[]);
   });
@@ -545,9 +556,17 @@ async function flushBuffer(): Promise<void> {
   const batch = buffer.splice(0, buffer.length);
   try {
     await uploadEvents(batch);
+    // Success: clear the backoff so the next tick runs immediately.
+    flushFailCount = 0;
+    nextFlushAllowedAt = 0;
   } catch (err) {
     console.warn("[scout] flush failed, queuing locally", err);
     for (const ev of batch) await enqueueEvent(ev);
+    // Exponential backoff: 10 s, 20 s, 40 s … capped at 5 min.
+    flushFailCount++;
+    const backoffMs = Math.min(300_000, Math.pow(2, flushFailCount) * 5_000);
+    nextFlushAllowedAt = Date.now() + backoffMs;
+    console.warn(`[scout] next flush allowed in ${Math.round(backoffMs / 1000)}s (fail #${flushFailCount})`);
   }
 }
 
@@ -742,6 +761,7 @@ async function onAudioDone(bytesB64: string, byteLength: number, mimeType: strin
       broadcastRecordingChanged(recordingId, "ready");
     } catch (e) {
       console.warn("[scout] transcribe failed (no-audio path)", e);
+      reportError("transcribe_no_audio", e, recordingId);
       broadcastRecordingChanged(recordingId, "failed");
     }
     audioDoneWaiters.get(recordingId)?.();
@@ -755,6 +775,7 @@ async function onAudioDone(bytesB64: string, byteLength: number, mimeType: strin
     .upload(path, new Blob([bytes as BlobPart], { type: mimeType }), { contentType: mimeType, upsert: true });
   if (error) {
     console.error("[scout] audio upload failed", error);
+    reportError("audio_upload", error, recordingId);
     await db.from("recordings").update({ status: "failed" }).eq("id", recordingId);
     broadcastRecordingChanged(recordingId, "failed");
     await closeOffscreen();
@@ -771,6 +792,7 @@ async function onAudioDone(bytesB64: string, byteLength: number, mimeType: strin
     broadcastRecordingChanged(recordingId, "ready");
   } catch (e) {
     console.warn("[scout] transcribe failed", e);
+    reportError("transcribe", e, recordingId);
     broadcastRecordingChanged(recordingId, "failed");
   }
   audioDoneWaiters.get(recordingId)?.();
@@ -783,16 +805,30 @@ function base64ToUint8(b64: string): Uint8Array {
   return out;
 }
 
-async function triggerTranscribe(recordingId: string): Promise<void> {
+// Retry up to MAX_ATTEMPTS times with exponential backoff (2 s, 4 s).
+// Throws after all attempts are exhausted so callers can mark the
+// recording as failed and surface it to the user.
+async function triggerTranscribe(recordingId: string, attempt = 0): Promise<void> {
+  const MAX_ATTEMPTS = 3;
   const authClient = getAuthSupabase();
   const { data: sess } = await authClient.auth.getSession();
   if (!sess.session) throw new Error("not authenticated");
-  const res = await fetch(functionUrl("transcribe"), {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${sess.session.access_token}` },
-    body: JSON.stringify({ recording_id: recordingId }),
-  });
-  if (!res.ok) throw new Error(`transcribe ${res.status}: ${await res.text()}`);
+  try {
+    const res = await fetch(functionUrl("transcribe"), {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${sess.session.access_token}` },
+      body: JSON.stringify({ recording_id: recordingId }),
+    });
+    if (!res.ok) throw new Error(`transcribe ${res.status}: ${await res.text()}`);
+  } catch (err) {
+    if (attempt < MAX_ATTEMPTS - 1) {
+      const delayMs = Math.pow(2, attempt + 1) * 2_000; // 2 s, 4 s
+      console.warn(`[scout] triggerTranscribe attempt ${attempt + 1}/${MAX_ATTEMPTS} failed, retrying in ${delayMs}ms`, err);
+      await new Promise((r) => setTimeout(r, delayMs));
+      return triggerTranscribe(recordingId, attempt + 1);
+    }
+    throw err;
+  }
 }
 
 // ---- Tab lifecycle (cross-tab capture) ----
@@ -1074,11 +1110,46 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse)
       }
     } catch (err) {
       console.error("[scout] message handler error", err);
-      sendResponse({ ok: false, error: String((err as Error)?.message || err) });
+      const errStr = String((err as Error)?.message || err);
+      // Persist last error so the "Report a problem" button in settings can pre-fill it.
+      chrome.storage.local.set({ "scout:last_error": errStr }).catch(() => {});
+      sendResponse({ ok: false, error: errStr });
     }
   })();
   return true; // keep sendResponse alive for the async handler
 });
+
+// ---- Error reporter ----
+
+// POST a PII-free error payload to the report-error Edge Function.
+// Fire-and-forget — never throws, never blocks the calling path.
+function reportError(context: string, err: unknown, recordingId?: string): void {
+  void (async () => {
+    try {
+      const authClient = getAuthSupabase();
+      const { data: sess } = await authClient.auth.getSession();
+      const manifest = chrome.runtime.getManifest();
+      // @ts-expect-error — userAgent is available in the service worker context
+      const chromeVer = (typeof navigator !== "undefined" ? navigator.userAgent : "").match(/Chrome\/([\d.]+)/)?.[1] ?? "unknown";
+      await fetch(functionUrl("report-error"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(sess.session ? { authorization: `Bearer ${sess.session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          extension_version: manifest.version,
+          chrome_version: chromeVer,
+          recording_id: recordingId ?? null,
+          context,
+          last_error: String((err as Error)?.message || err).slice(0, 500),
+        }),
+      });
+    } catch {
+      // Intentionally silent — reporting failures must not cascade.
+    }
+  })();
+}
 
 // ---- Keyboard shortcut (Alt+Shift+R) ----
 
@@ -1102,17 +1173,24 @@ chrome.commands.onCommand.addListener((command) => {
   })();
 });
 
-// On worker wake, restore badge state and restart timers if recording is active.
-// If no session in storage (browser restarted), auto-fail any recordings this
-// user left stuck in "recording" status — prevents the library showing a
-// perpetual spinner on orphaned rows.
+// On worker wake after hibernation or cold-start:
+//  - Active session → restart timers + restore badge. The flush/coach
+//    alarms already fire on wake; startTimers() re-registers them.
+//  - Paused session → restore the "paused" badge without restarting timers
+//    (timers are intentionally stopped while paused).
+//  - No session (browser restart) → clear badge and auto-fail any recordings
+//    that were left stuck in recording/uploading/transcribing status.
 (async () => {
   const state = await loadSession();
   if (state && !state.is_paused) {
     startTimers();
     chrome.action.setBadgeText({ text: "REC" });
     chrome.action.setBadgeBackgroundColor({ color: "#DC2626" });
-  } else if (!state) {
+  } else if (state && state.is_paused) {
+    // Paused — show a distinct badge so the user knows the session is live.
+    chrome.action.setBadgeText({ text: "||" });
+    chrome.action.setBadgeBackgroundColor({ color: "#B45309" });
+  } else {
     chrome.action.setBadgeText({ text: "" });
     void failStaleRecordings();
   }
@@ -1124,16 +1202,23 @@ async function failStaleRecordings(): Promise<void> {
     const db = getDataSupabase();
     const { data: auth } = await authClient.auth.getUser();
     if (!auth.user) return;
-    // Any recording stuck in "recording" status for > 5 minutes is orphaned.
-    const cutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-    const { data: stale } = await db
-      .from("recordings")
-      .select("id")
-      .eq("user_id", auth.user.id)
-      .eq("status", "recording")
-      .lt("started_at", cutoff);
-    if (!stale?.length) return;
-    const ids = stale.map((r: { id: string }) => r.id);
+
+    // "recording" status > 5 min → orphaned session (browser restart killed SW).
+    const cutoff5m  = new Date(Date.now() -  5 * 60_000).toISOString();
+    // "uploading"/"transcribing" > 10 min → upload or transcription stalled.
+    const cutoff10m = new Date(Date.now() - 10 * 60_000).toISOString();
+
+    const [{ data: staleRec }, { data: staleProc }] = await Promise.all([
+      db.from("recordings").select("id")
+        .eq("user_id", auth.user.id).eq("status", "recording")
+        .lt("started_at", cutoff5m),
+      db.from("recordings").select("id")
+        .eq("user_id", auth.user.id).in("status", ["uploading", "transcribing"])
+        .lt("started_at", cutoff10m),
+    ]);
+
+    const ids = [...(staleRec ?? []), ...(staleProc ?? [])].map((r: { id: string }) => r.id);
+    if (!ids.length) return;
     await db.from("recordings").update({ status: "failed" }).in("id", ids);
     for (const id of ids) broadcastRecordingChanged(id, "failed");
     console.log("[scout] auto-failed stale recordings", ids);

@@ -70,8 +70,6 @@ US phone numbers, API keys (`sk-`, `ghp_`, `sbp_`, `AKIA`, `AIza`), and long hex
 
 ---
 
-> See `scout_v1_build_brief.pdf` (in the user's Downloads at build time) for the full product brief.
-
 ## Install
 
 - **End users** — install from the unlisted Chrome Web Store listing (link
@@ -81,7 +79,7 @@ US phone numbers, API keys (`sk-`, `ghp_`, `sbp_`, `AKIA`, `AIza`), and long hex
   window with the unpacked extension preloaded into a separate profile so it
   doesn't touch your main browser.
 
-Privacy policy: <https://gist.github.com/Orage-Agency/788e7dcf7a0ec71c5e9bf7438746e651>
+Privacy policy: [PRIVACY.md](./PRIVACY.md) · hosted at <https://orage-agency.github.io/scout/privacy/>
 
 ## Architecture
 

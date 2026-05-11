@@ -211,11 +211,16 @@ const MAX_SCREENSHOTS = 12;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders() });
+  const reqId = crypto.randomUUID().slice(0, 8);
+  const t0 = Date.now();
   try {
     const user = await verifyAuthUser(req.headers.get("authorization"));
-    if (!user) return json({ error: "unauthorized" }, 401);
+    if (!user) { console.warn(`[generate-skill ${reqId}] unauthorized`); return json({ error: "unauthorized" }, 401); }
+    console.log(`[generate-skill ${reqId}] user=${user.id}`);
 
-    const { recording_id, extra } = (await req.json()) as GenReq;
+    let recording_id: string, extra: string | undefined;
+    try { ({ recording_id, extra } = (await req.json()) as GenReq); }
+    catch { return json({ error: "invalid_json" }, 400); }
     if (!recording_id) return json({ error: "missing recording_id" }, 400);
 
     const admin = adminClient();
@@ -317,6 +322,7 @@ SCREENSHOTS: {{IMAGE_COUNT}} attached as image blocks below.`;
     (async () => {
       try {
         const isImprovement = rec.mode === "improvement";
+        console.log(`[generate-skill ${reqId}] mode=${rec.mode} tier=${tier} events=${events?.length ?? 0}`);
 
         // Stream the PRIMARY output — improvement brief for critique recordings,
         // skill file for workflow recordings. This is what the user sees live.
@@ -365,8 +371,8 @@ SCREENSHOTS: {{IMAGE_COUNT}} attached as image blocks below.`;
 
         await send({ type: "done", ...primary, all: inserted });
       } catch (err) {
-        console.error("[generate-skill]", err);
-        await send({ type: "error", message: String((err as Error).message) });
+        console.error(`[generate-skill ${reqId}] stream error ms=${Date.now() - t0}`, err);
+        await send({ type: "error", code: "llm_error", message: String((err as Error).message) });
       } finally {
         await writer.close();
       }
@@ -381,7 +387,7 @@ SCREENSHOTS: {{IMAGE_COUNT}} attached as image blocks below.`;
       },
     });
   } catch (err) {
-    console.error("[generate-skill]", err);
+    console.error(`[generate-skill ${reqId}] fatal error ms=${Date.now() - t0}`, err);
     return json({ error: String((err as Error).message) }, 500);
   }
 });

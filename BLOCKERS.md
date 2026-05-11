@@ -63,7 +63,7 @@ Visible on-screen PII gets captured raw today. Tesseract.js client-side (~3MB bu
 3. Also fill `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (same project URL, anon key).
 4. From repo root: `pnpm exec supabase login` (interactive), then `pnpm exec supabase link --project-ref <ref>`, then `pnpm exec supabase db push`.
 5. In the Supabase dashboard, create three Storage buckets (private): `screenshots`, `audio`, `skills`.
-6. `pnpm exec supabase secrets set ANTHROPIC_API_KEY=<key>`.
+6. `pnpm exec supabase secrets set OPENROUTER_API_KEY=<key>` (or `ANTHROPIC_API_KEY` if using Anthropic direct — see DECISIONS.md D4).
 7. `pnpm exec supabase functions deploy coach && pnpm exec supabase functions deploy transcribe && pnpm exec supabase functions deploy generate-skill`.
 
 **To unblock fully autonomously next time:** ensure the Supabase MCP server is configured in the Claude Code settings before the run starts, or pre-set `SUPABASE_ACCESS_TOKEN` in the shell.
@@ -80,10 +80,8 @@ Visible on-screen PII gets captured raw today. Tesseract.js client-side (~3MB bu
 
 ---
 
-## B3 — `ANTHROPIC_API_KEY` not in shell env
+## B3 — LLM API key not in shell env (RESOLVED — switched to OpenRouter)
 
-**What:** Operating Rule 1.3 says the key flows in via Claude Code's terminal auth and gets reused as a Supabase Edge Function secret. No environment variable is exposed to Bash/PowerShell.
+**Original:** `ANTHROPIC_API_KEY` was not in the shell env and couldn't be extracted from Claude Code's own auth.
 
-**What was tried:** Checked `$env:ANTHROPIC_API_KEY` — not set. The key is only available to Claude Code's own model calls, not to subprocess commands.
-
-**Result:** Edge Function code is written to read `Deno.env.get("ANTHROPIC_API_KEY")`. The user must run `supabase secrets set ANTHROPIC_API_KEY=<their-key>` once before deploying functions. Documented in README and `.env.example`.
+**Resolution (2026-05-02):** Architecture pivoted to OpenRouter. `OPENROUTER_API_KEY` was set as a Supabase secret. `_shared/llm.ts` checks `ANTHROPIC_API_KEY` first (direct Anthropic) then falls back to `OPENROUTER_API_KEY` (OpenRouter). In production, only `OPENROUTER_API_KEY` is set.

@@ -15,11 +15,16 @@ interface TranscribeReq {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders() });
+  const reqId = crypto.randomUUID().slice(0, 8);
+  const t0 = Date.now();
   try {
     const user = await verifyAuthUser(req.headers.get("authorization"));
-    if (!user) return json({ error: "unauthorized" }, 401);
+    if (!user) { console.warn(`[transcribe ${reqId}] unauthorized`); return json({ error: "unauthorized" }, 401); }
+    console.log(`[transcribe ${reqId}] user=${user.id}`);
 
-    const { recording_id } = (await req.json()) as TranscribeReq;
+    let recording_id: string;
+    try { ({ recording_id } = (await req.json()) as TranscribeReq); }
+    catch { return json({ error: "invalid_json" }, 400); }
     if (!recording_id) return json({ error: "missing recording_id" }, 400);
 
     const admin = adminClient();
@@ -83,9 +88,10 @@ Deno.serve(async (req) => {
       .update({ transcript: { segments }, status: "ready" })
       .eq("id", recording_id);
 
+    console.log(`[transcribe ${reqId}] done segments=${segments.length} ms=${Date.now() - t0}`);
     return json({ ok: true, segments: segments.length });
   } catch (err) {
-    console.error("[transcribe]", err);
+    console.error(`[transcribe ${reqId}] error ms=${Date.now() - t0}`, err);
     return json({ error: String((err as Error).message) }, 500);
   }
 });

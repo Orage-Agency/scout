@@ -19,11 +19,15 @@ interface TranscribeChunkReq {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders() });
+  const reqId = crypto.randomUUID().slice(0, 8);
+  const t0 = Date.now();
   try {
     const user = await verifyAuthUser(req.headers.get("authorization"));
-    if (!user) return json({ error: "unauthorized" }, 401);
+    if (!user) { console.warn(`[transcribe-chunk ${reqId}] unauthorized`); return json({ error: "unauthorized" }, 401); }
 
-    const body = (await req.json()) as TranscribeChunkReq;
+    let body: TranscribeChunkReq;
+    try { body = (await req.json()) as TranscribeChunkReq; }
+    catch { return json({ error: "invalid_json" }, 400); }
     if (!body.audio_base64 || !body.mime_type || !body.recording_id) {
       return json({ error: "missing fields" }, 400);
     }
@@ -50,9 +54,10 @@ Deno.serve(async (req) => {
       return "";
     });
 
+    console.log(`[transcribe-chunk ${reqId}] done chars=${text.trim().length} ms=${Date.now() - t0}`);
     return json({ text: text.trim() });
   } catch (err) {
-    console.error("[transcribe-chunk]", err);
+    console.error(`[transcribe-chunk ${reqId}] error ms=${Date.now() - t0}`, err);
     return json({ error: String((err as Error).message) }, 500);
   }
 });

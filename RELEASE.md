@@ -26,10 +26,9 @@ listing metadata.
    - **Description:** copy the README intro.
    - **Category:** Productivity.
    - **Visibility:** Unlisted.
-   - **Privacy policy URL:** `https://gist.github.com/Orage-Agency/788e7dcf7a0ec71c5e9bf7438746e651`
-     (a public gist — keeps the source repo private; if you ever want a
-     prettier domain, make the repo public and `Settings → Pages → Source:
-     main / docs` will serve `https://orage-agency.github.io/scout/privacy/`).
+   - **Privacy policy URL:** `https://orage-agency.github.io/scout/privacy/`
+     (served from `docs/privacy.md` via GitHub Pages — enable Pages on
+     `Settings → Pages → Source: main / docs` if not already on).
    - **Permission justifications:** see `docs/cws-permission-justifications.md`.
    - **Screenshots:** upload `tests/screenshots/cws/*.png`.
 4. Submit for review. First review takes 1–3 business days.
@@ -57,13 +56,16 @@ Also add the runtime secrets the build needs:
 - **`VITE_SUPABASE_URL`** — `https://wmicxsafqbixedpjhchc.supabase.co`
 - **`VITE_SUPABASE_ANON_KEY`** — copy from `.env`
 
-### 4. (Skip — privacy policy is already hosted)
+### 4. Enable GitHub Pages for the privacy policy
 
-The privacy policy lives on a public gist:
-`https://gist.github.com/Orage-Agency/788e7dcf7a0ec71c5e9bf7438746e651`.
-Edits go through `gh gist edit` or the API. To switch to a custom
-GitHub Pages URL later, make the source repo public and turn on
-`Settings → Pages → Source: main / docs`.
+The privacy policy is in `docs/privacy.md` and served at
+`https://orage-agency.github.io/scout/privacy/` via GitHub Pages.
+
+1. Go to repo **Settings → Pages**.
+2. Under **Source**, select `Deploy from a branch` → branch `main` → folder `/docs`.
+3. Save. Pages builds in ~1 minute.
+4. Confirm `https://orage-agency.github.io/scout/privacy/` loads before
+   submitting the CWS listing (the store validates the URL on submission).
 
 ## Day-to-day release flow
 

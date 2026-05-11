@@ -39,7 +39,7 @@ export function getAuthSupabase(): SupabaseClient {
       autoRefreshToken: true,
       detectSessionInUrl: false,
     },
-    global: { headers: { "x-scout-client": "extension/0.1.4-auth" } },
+    global: { headers: { "x-scout-client": "extension/0.2.2-auth" } },
   });
   // Ensure data client also exists so the bridge can attach. Calling
   // getDataSupabase here is safe — it short-circuits if _data is set, and
@@ -67,7 +67,7 @@ export function getDataSupabase(): SupabaseClient {
       autoRefreshToken: false,
       detectSessionInUrl: false,
     },
-    global: { headers: { "x-scout-client": "extension/0.1.4-data" } },
+    global: { headers: { "x-scout-client": "extension/0.2.2-data" } },
   });
   // Ensure auth client exists so the bridge can attach. This guards the
   // service-worker wake-up case where the first call after rehydration is
