@@ -1129,7 +1129,6 @@ function reportError(context: string, err: unknown, recordingId?: string): void 
       const authClient = getAuthSupabase();
       const { data: sess } = await authClient.auth.getSession();
       const manifest = chrome.runtime.getManifest();
-      // @ts-expect-error — userAgent is available in the service worker context
       const chromeVer = (typeof navigator !== "undefined" ? navigator.userAgent : "").match(/Chrome\/([\d.]+)/)?.[1] ?? "unknown";
       await fetch(functionUrl("report-error"), {
         method: "POST",

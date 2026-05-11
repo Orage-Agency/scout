@@ -64,7 +64,7 @@ jobs:
         run: pnpm exec playwright install chromium --with-deps
 
       - name: Run smoke tests
-        run: pnpm test:smoke
+        run: xvfb-run --auto-servernum -- pnpm test:smoke
         env:
           VITE_SUPABASE_URL: https://stub.supabase.co
           VITE_SUPABASE_ANON_KEY: stub-anon-key
