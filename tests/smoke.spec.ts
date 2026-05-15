@@ -56,16 +56,15 @@ test("popup opens with sign-in prompt", async () => {
 });
 
 test("PII acknowledgement key is defined in storage schema", async () => {
-  // Verifies the PII_ACK_KEY constant is wired — we check the popup source
-  // contains the storage key name rather than driving a full auth flow.
-  let [sw] = context.serviceWorkers();
-  if (!sw) sw = await context.waitForEvent("serviceworker");
-  const extId = new URL(sw.url()).host;
-  const popup = await context.newPage();
-  await popup.goto(`chrome-extension://${extId}/src/popup/index.html`);
-  const html = await popup.content();
-  // Both the PII ack key and the privacy link should be present in the bundle.
-  expect(html).toContain("scout:pii_ack");
+  // Verifies the PII_ACK_KEY constant is wired — checks the built JS bundle
+  // rather than the rendered HTML (the constant lives in a script chunk, not
+  // the DOM).
+  const assetsDir = path.join(EXT_DIR, "assets");
+  const bundleFiles = fs.readdirSync(assetsDir).filter((f) => f.endsWith(".js"));
+  const hasPiiAck = bundleFiles.some((f) =>
+    fs.readFileSync(path.join(assetsDir, f), "utf-8").includes("scout:pii_ack"),
+  );
+  expect(hasPiiAck).toBe(true);
 });
 
 test("voice narration toggle renders on Record tab", async () => {

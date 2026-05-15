@@ -5,7 +5,7 @@
 #   2. Run:  $env:SUPABASE_ACCESS_TOKEN = "<your_new_pat>"
 #   3. Then: powershell -ExecutionPolicy Bypass -File scripts\deploy-edge-functions.ps1
 #
-# All four functions are deployed sequentially. The script exits on first failure.
+# All five functions are deployed sequentially. The script exits on first failure.
 param(
   [string]$ProjectRef = "wmicxsafqbixedpjhchc"
 )
@@ -21,7 +21,7 @@ if (-not $env:SUPABASE_ACCESS_TOKEN) {
   exit 1
 }
 
-$Functions = @("coach", "transcribe", "generate-skill", "transcribe-chunk")
+$Functions = @("coach", "transcribe", "generate-skill", "transcribe-chunk", "report-error")
 
 foreach ($fn in $Functions) {
   Write-Host "`nDeploying $fn..." -ForegroundColor Cyan

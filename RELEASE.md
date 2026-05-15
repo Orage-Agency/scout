@@ -72,14 +72,15 @@ The privacy policy is in `docs/privacy.md` and served at
 After the one-time setup:
 
 ```sh
-# 1. Bump the version in apps/extension/src/manifest.json (e.g. 0.1.0 -> 0.1.1)
-# 2. Commit
-git add apps/extension/src/manifest.json
-git commit -m "chore: bump to v0.1.1"
+# 1. Bump version in package.json AND apps/extension/src/manifest.json
+# 2. Update CHANGELOG.md with the new version section
+# 3. Commit
+git add package.json apps/extension/src/manifest.json CHANGELOG.md
+git commit -m "chore: bump to v0.2.3"
 
-# 3. Tag and push — this triggers the release workflow
-git tag v0.1.1
-git push origin main v0.1.1
+# 4. Tag and push — this triggers the release workflow
+git tag v0.2.3
+git push origin main v0.2.3
 ```
 
 The workflow will:

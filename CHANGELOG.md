@@ -2,15 +2,32 @@
 
 All notable changes to Scout are listed here. Backfilled from `BUILD_LOG.md`.
 
-## [0.2.2] — 2026-05-08
+## [0.2.2] — 2026-05-14
 
 ### Added
 - **Live Gemini transcription**: offscreen document now runs two parallel `MediaRecorder` instances — one full-session recorder and one 5-second cycling recorder. Each 5 s chunk is independently decodable WebM, base64-encoded, and sent to a new `transcribe-chunk` Edge Function backed by `google/gemini-2.0-flash-001` via OpenRouter. Returned text is appended to a rolling 1 500-char `live_transcript_tail` in session state and passed to the coach.
 - **`transcribe-chunk` Edge Function**: new function that accepts a base64 audio chunk, verifies the JWT, transcribes via Gemini 2.0 Flash, and returns plain text.
+- **PII acknowledgement modal**: shown once before the first recording. Discloses that screenshots capture visible on-screen text (OCR redaction not in v1) and instructs users not to record sensitive surfaces. Stored in `chrome.storage.local` under `scout:pii_ack`.
+- **`report-error` Edge Function**: lightweight error ingestion — receives a PII-free payload from the extension, logs it to Supabase function logs (visible at dashboard → Edge Functions → report-error → Logs). Client-side `reportError()` in the service worker sends flush / transcribe / audio-upload failures automatically.
+- **"Report a problem" button** in Settings: prefills a mailto link with the extension version and last error (no PII).
+- **RLS test suite** (`supabase/tests/rls.sql`): 216-line SQL test file verifying all row-level security policies.
+- **Redaction audit doc** (`docs/REDACTION_AUDIT.md`): complete inventory of what is and isn't redacted before data leaves the browser.
+- **CI workflow** (`.github/workflows/ci.yml`): typecheck + smoke test on every push/PR to main. Smoke runs with stub env values so no real Supabase credentials are needed in CI.
+- **`preflight.mjs` script** (`pnpm preflight`): local pre-release check — typecheck, env validation, build, smoke test in sequence.
+- **`CHANGELOG.md`**: this file.
 
 ### Changed
 - Replaced Web Speech API live-transcription approach with the Gemini dual-recorder approach (more reliable, no browser speech engine dependency).
 - `live_transcript_tail` rolling window increased to 1 500 chars.
+- Flush retry uses exponential backoff (1 s, 2 s, 4 s) before falling back to IndexedDB queue.
+- `transcribe` edge function retries the LLM call up to 3 times on transient failure.
+- Stale-recording auto-fail extended to cover `uploading` and `transcribing` states (previously only `recording`).
+- Paused badge restored correctly on service-worker rehydration.
+- Structured `[fn reqId]` logging in all 4 edge functions (coach, transcribe, generate-skill, transcribe-chunk).
+
+### Fixed
+- Smoke test for `scout:pii_ack` now checks the JS bundle directly (not rendered HTML, where the string doesn't appear).
+- Deploy script updated to include `report-error` as the fifth function.
 
 ---
 
