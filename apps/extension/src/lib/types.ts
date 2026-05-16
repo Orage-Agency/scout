@@ -42,6 +42,7 @@ export interface CapturedEvent {
 export interface RecordingSessionState {
   recording_id: string;
   user_id: string;
+  access_token: string; // stored at recording-start so stop/upload paths always have auth
   started_at: number; // epoch ms
   paused_ms: number;  // total time paused
   is_paused: boolean;

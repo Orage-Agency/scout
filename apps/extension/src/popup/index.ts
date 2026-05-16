@@ -100,8 +100,9 @@ async function init(): Promise<void> {
         view = { kind: "skill", recording: rec as RecordingRow, skill: newest, allSkills: sorted };
         return render();
       }
-      if (rec.status === "uploading" || rec.status === "transcribing") {
-        view = { kind: "processing", recording: rec as RecordingRow, stage: rec.status as "uploading" | "transcribing" };
+      if (rec.status === "uploading" || rec.status === "transcribing" || rec.status === "recording") {
+        const stage: "uploading" | "transcribing" = rec.status === "transcribing" ? "transcribing" : "uploading";
+        view = { kind: "processing", recording: rec as RecordingRow, stage };
         render();
         void runAutoGenerate(rec as RecordingRow);
         return;
@@ -1048,7 +1049,10 @@ function recordingView(s: RecordingSessionState): HTMLElement {
     render();
   };
 
-  d.querySelector<HTMLButtonElement>("#stop")!.onclick = async () => {
+  const stopBtn = d.querySelector<HTMLButtonElement>("#stop")!;
+  stopBtn.onclick = async () => {
+    stopBtn.disabled = true;
+    stopBtn.textContent = "Stopping…";
     const recordingId = s.recording_id;
     lastStopStats = {
       event_count: s.event_count ?? 0,
@@ -1056,7 +1060,18 @@ function recordingView(s: RecordingSessionState): HTMLElement {
       had_voice: !!(s.mic_enabled && s.live_transcript_tail),
     };
     await chrome.storage.local.set({ [RECENT_KEY]: recordingId });
-    void chrome.runtime.sendMessage({ type: "popup:stop_recording" } satisfies RuntimeMessage);
+    // Await the stop so that if the service worker is sleeping or unreachable
+    // the error surfaces instead of being swallowed, and we retry once.
+    let stopOk = false;
+    for (let attempt = 0; attempt < 2 && !stopOk; attempt++) {
+      try {
+        await chrome.runtime.sendMessage({ type: "popup:stop_recording" } satisfies RuntimeMessage);
+        stopOk = true;
+      } catch {
+        // Service worker may have been killed mid-session; give it a tick to restart.
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    }
     const db = getDataSupabase();
     const { data: rec } = await db.from("recordings").select("*").eq("id", recordingId).single();
     if (rec) {
@@ -1163,7 +1178,7 @@ async function runAutoGenerate(rec: RecordingRow, extra?: string): Promise<void>
     const { data } = await db.from("recordings").select("status").eq("id", rec.id).single();
     const status = data?.status as string | undefined;
     if (view.kind !== "processing" || view.recording.id !== rec.id) return;
-    if (status === "uploading")         view.stage = "uploading";
+    if (status === "uploading" || status === "recording") view.stage = "uploading";
     else if (status === "transcribing") view.stage = "transcribing";
     else if (status === "ready")        break;
     else if (status === "failed") { view.error = "Recording failed during upload or transcription."; render(); return; }
@@ -1584,7 +1599,7 @@ function skillView(
       <div class="grid grid-cols-3 gap-2">
         <button id="cp" class="btn text-[11px]">Copy raw</button>
         <button id="dl" class="btn text-[11px]">Save .md</button>
-        <button id="dryrun" class="btn text-[11px]">Dry run</button>
+        <button id="dryrun" class="btn text-[11px]" style="color:#E4AF7A;">Run</button>
       </div>
       <div class="grid grid-cols-2 gap-2">
         <button id="edit-btn" class="btn text-[11px]">Edit</button>
@@ -1838,37 +1853,137 @@ function stripImageRefs(md: string): string {
 
 
 async function runDryRun(skill: SkillRow, container: HTMLElement): Promise<void> {
-  const out = container.querySelector<HTMLPreElement>("#dryout")!;
-  const btn = container.querySelector<HTMLButtonElement>("#dryrun")!;
-  const url = (import.meta.env.VITE_SCOUT_RUNTIME_URL as string | undefined)?.replace(/\/$/, "");
-  const key = import.meta.env.VITE_SCOUT_RUNTIME_KEY as string | undefined
-    ?? import.meta.env.VITE_SCOUT_RUNTIME_API_KEY as string | undefined;
-  if (!url || !key) {
-    out.classList.remove("hidden");
-    out.textContent = "scout-runtime not configured. Set VITE_SCOUT_RUNTIME_URL and VITE_SCOUT_RUNTIME_API_KEY in .env, then rebuild.";
-    return;
-  }
+  const out   = container.querySelector<HTMLPreElement>("#dryout")!;
+  const btn   = container.querySelector<HTMLButtonElement>("#dryrun")!;
+  const auth  = getAuthSupabase();
+
   btn.disabled = true;
   btn.textContent = "Planning…";
   out.classList.remove("hidden");
-  out.textContent = "calling /api/run...";
-  const inputsRaw = prompt("Inputs JSON (or leave blank):", "{}");
-  let inputs: Record<string, unknown> = {};
-  try { inputs = inputsRaw ? JSON.parse(inputsRaw) : {}; }
-  catch { out.textContent = "Invalid JSON inputs."; btn.disabled = false; btn.textContent = "Test in cloud (dry-run)"; return; }
+  out.textContent = "Sending to Claude…";
+
+  // Collect variable inputs if the skill declares any.
+  const vars = extractVariables(skill.body_md);
+  let inputs: Record<string, string> = {};
+  if (vars.length > 0) {
+    const examples = extractExampleValues(skill.body_md);
+    const inputsRaw = prompt(
+      `This skill has ${vars.length} variable(s): ${vars.join(", ")}\n\nEnter values as JSON (leave blank to use example values):`,
+      JSON.stringify(examples, null, 2),
+    );
+    if (inputsRaw === null) {
+      // User cancelled.
+      out.classList.add("hidden");
+      btn.disabled = false;
+      btn.textContent = "Run";
+      return;
+    }
+    try { inputs = inputsRaw.trim() ? JSON.parse(inputsRaw) : examples; }
+    catch {
+      out.textContent = "Invalid JSON — check your input and try again.";
+      btn.disabled = false;
+      btn.textContent = "Run";
+      return;
+    }
+  }
+
   try {
-    const res = await fetch(`${url}/api/run`, {
+    const { data: sess } = await auth.auth.getSession();
+    const res = await fetch(functionUrl("run-skill"), {
       method: "POST",
-      headers: { "content-type": "application/json", "x-runtime-key": key },
-      body: JSON.stringify({ skill_id: skill.id, inputs, dry_run: true }),
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${sess.session?.access_token ?? ""}`,
+      },
+      body: JSON.stringify({ skill_id: skill.id, inputs }),
     });
-    const json = await res.json() as Record<string, unknown>;
-    out.textContent = JSON.stringify(json, null, 2);
+
+    if (!res.ok) {
+      out.textContent = `Error ${res.status}: ${await res.text()}`;
+      return;
+    }
+
+    const contentType = res.headers.get("content-type") ?? "";
+    if (!contentType.includes("text/event-stream")) {
+      const j = await res.json() as Record<string, unknown>;
+      out.textContent = JSON.stringify(j, null, 2);
+      return;
+    }
+
+    // Streaming path: render each SSE event as it arrives.
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let sseBuf = "";
+    const lines: string[] = [];
+
+    const appendLine = (line: string) => {
+      lines.push(line);
+      out.textContent = lines.join("\n");
+      out.scrollTop = out.scrollHeight;
+    };
+
+    appendLine("Planning execution…");
+
+    outer: while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sseBuf += decoder.decode(value, { stream: true });
+      const parts = sseBuf.split("\n");
+      sseBuf = parts.pop() ?? "";
+
+      for (const part of parts) {
+        if (!part.startsWith("data: ")) continue;
+        const raw = part.slice(6).trim();
+        if (!raw || raw === "[DONE]") continue;
+        let evt: Record<string, unknown>;
+        try { evt = JSON.parse(raw); } catch { continue; }
+
+        switch (evt.type) {
+          case "status":
+            appendLine(`⏳ ${evt.message}`);
+            break;
+          case "plan":
+            lines.length = 0;
+            appendLine("Plan:");
+            for (const s of (evt.steps as Array<{ n: number; description: string; type: string }>) ?? []) {
+              appendLine(`  ${s.n}. [${s.type.toUpperCase()}] ${s.description}`);
+            }
+            appendLine("");
+            appendLine("Executing…");
+            break;
+          case "step_start":
+            appendLine(`▶ Step ${evt.n}: ${evt.description}`);
+            break;
+          case "step_done": {
+            const st = evt.status as string;
+            const icon = st === "ok" ? "✓" : st === "manual" ? "✋" : st === "blocked" ? "🚫" : "✗";
+            let detail = "";
+            if (st === "ok" && evt.output) {
+              const out2 = evt.output;
+              detail = " → " + (typeof out2 === "object" ? JSON.stringify(out2).slice(0, 120) : String(out2).slice(0, 120));
+            } else if (evt.error) {
+              detail = ` → ${evt.error}`;
+            } else if (evt.note) {
+              detail = ` → ${evt.note}`;
+            }
+            appendLine(`  ${icon} Step ${evt.n} ${st.toUpperCase()}${detail}`);
+            break;
+          }
+          case "done":
+            appendLine("");
+            appendLine(`✅ Run ${(evt.status as string).toUpperCase()} (${(evt.results as unknown[])?.length ?? 0} steps)`);
+            break outer;
+          case "error":
+            appendLine(`\n❌ Error: ${evt.message}`);
+            break outer;
+        }
+      }
+    }
   } catch (e) {
     out.textContent = `Error: ${(e as Error).message}`;
   } finally {
     btn.disabled = false;
-    btn.textContent = "Test in cloud (dry-run)";
+    btn.textContent = "Run";
   }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "scout",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "Scout — a Chrome extension that captures human workflows and turns them into structured skill files for AI agents.",
   "license": "UNLICENSED",
@@ -11,7 +11,7 @@
     "typecheck": "pnpm --filter @scout/extension typecheck",
     "db:push": "supabase db push",
     "db:reset": "supabase db reset",
-    "functions:deploy": "supabase functions deploy coach && supabase functions deploy transcribe && supabase functions deploy generate-skill && supabase functions deploy transcribe-chunk && supabase functions deploy report-error",
+    "functions:deploy": "supabase functions deploy coach && supabase functions deploy transcribe && supabase functions deploy generate-skill && supabase functions deploy transcribe-chunk && supabase functions deploy report-error && supabase functions deploy run-skill",
     "test:smoke": "playwright test tests/smoke.spec.ts",
     "preflight": "node scripts/preflight.mjs",
     "launch": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-scout.ps1",

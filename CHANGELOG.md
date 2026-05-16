@@ -2,6 +2,21 @@
 
 All notable changes to Scout are listed here. Backfilled from `BUILD_LOG.md`.
 
+## [0.2.3] — 2026-05-15
+
+### Added
+- **Skill execution via Claude** (`run-skill` edge function): click **Run** on any SKILL.md to have Claude parse the Faster path section and execute HTTP API steps directly — live streaming output in the popup shows each step's status. Results stored in a new `skill_runs` table.
+- **`skill_runs` table** (migration `0007_skill_runs.sql`): tracks every run with inputs, per-step results, and final status.
+
+### Fixed
+- Recording insert retry: if the initial Supabase insert fails, the service worker retries once (1 s delay). Previously it silently continued with a phantom recording ID that caused 404 errors on Generate Skill.
+- Removed unused `desktopCapture` Chrome permission — it was never called and showed in the extension's permission prompt confusingly.
+
+### Changed
+- "Dry run" button renamed to **Run** — now calls the built-in `run-skill` edge function instead of the external scout-runtime service (which no longer exists).
+
+---
+
 ## [0.2.2] — 2026-05-14
 
 ### Added

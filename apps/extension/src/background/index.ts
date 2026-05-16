@@ -70,33 +70,45 @@ async function startRecording(
     console.warn("[scout] start_recording: not authenticated");
     return null;
   }
+  // Grab the session token now, while the auth client is warm, and store it in
+  // the session state. stopRecording() and onAudioDone() read it back directly
+  // instead of re-initialising the auth bridge (which races on SW wake-up).
+  const { data: startSess } = await authClient.auth.getSession();
+  const accessToken = startSess.session?.access_token ?? "";
 
   // Create the recording row first so we have a stable id for storage paths.
   const recordingId = uuid();
   const startedAtMs = Date.now();
-  const { error } = await db
-    .from("recordings")
-    .insert({
-      id: recordingId,
-      user_id: auth.user.id,
-      status: "recording",
-      mode,
-      started_at: new Date(startedAtMs).toISOString(),
-      // tier lives in meta so we don't need a schema migration for an
-      // experimental knob. generate-skill reads rec.meta.tier.
-      meta: { ua: navigator.userAgent, platform: navigator.platform, tier },
-    });
-  if (error) {
-    console.error("[scout] failed to insert recording", error);
-    // We still let the user record — events queue locally and flush later.
-  } else {
-    broadcastRecordingChanged(recordingId, "recording");
+  const insertRow = {
+    id: recordingId,
+    user_id: auth.user.id,
+    status: "recording",
+    mode,
+    started_at: new Date(startedAtMs).toISOString(),
+    // tier lives in meta so we don't need a schema migration for an
+    // experimental knob. generate-skill reads rec.meta.tier.
+    meta: { ua: navigator.userAgent, platform: navigator.platform, tier },
+  };
+  let { error: insertErr } = await db.from("recordings").insert(insertRow);
+  if (insertErr) {
+    // Retry once — transient network blip is the common cause.
+    console.warn("[scout] recording insert failed, retrying once", insertErr);
+    await new Promise((r) => setTimeout(r, 1000));
+    ({ error: insertErr } = await db.from("recordings").insert(insertRow));
   }
+  if (insertErr) {
+    console.error("[scout] recording insert failed after retry — aborting start", insertErr);
+    // Don't proceed: the DB row doesn't exist, so events, audio, and
+    // generate-skill would all 404. Surface the error to the popup instead.
+    return null;
+  }
+  broadcastRecordingChanged(recordingId, "recording");
 
   const [activeAtStart] = await chrome.tabs.query({ active: true, currentWindow: true });
   const state: RecordingSessionState = {
     recording_id: recordingId,
     user_id: auth.user.id,
+    access_token: accessToken,
     started_at: startedAtMs,
     paused_ms: 0,
     is_paused: false,
@@ -160,10 +172,12 @@ async function stopRecording(): Promise<void> {
   chrome.action.setBadgeText({ text: "" });
   await flushBuffer();
 
-  // Serialize the audio finalize so onAudioDone runs to completion BEFORE we
-  // clear the session and exit. Otherwise the parallel 'uploading' update
-  // here can overwrite the 'transcribing' update from onAudioDone.
+  // Use the access token stored at recording-start — it was captured while the
+  // auth client was warm and avoids the async bridge race on SW wake-up.
   const db = getDataSupabase();
+  if (state.access_token) {
+    await db.auth.setSession({ access_token: state.access_token, refresh_token: "" });
+  }
   const endedAt = Date.now();
   const durationMs = endedAt - state.started_at - state.paused_ms;
 
@@ -203,6 +217,14 @@ async function stopRecording(): Promise<void> {
     .eq("id", state.recording_id);
   broadcastRecordingChanged(state.recording_id, "uploading");
 
+  // Clear session immediately after the DB status is set so that if the popup
+  // reopens during the audio upload (or if the service worker is killed before
+  // onAudioDone completes), the popup sees "uploading" status rather than
+  // "recording in progress." onAudioDone falls back to a DB lookup when the
+  // session is already cleared.
+  await saveSession(null);
+  await chrome.runtime.sendMessage({ type: "popup:state", state: null }).catch(() => {});
+
   // 2. Tell offscreen to wrap up. We await the response so we know stop()
   //    has finished and audio_done has been *sent* by the time this resolves.
   //    The audio_done message is processed by our own onMessage listener
@@ -214,10 +236,6 @@ async function stopRecording(): Promise<void> {
     /* offscreen may have been closed already; we still wait for audio_done */
   }
   await audioPromise;
-
-  // 3. Now safe to clear session — finalize is done.
-  await saveSession(null);
-  await chrome.runtime.sendMessage({ type: "popup:state", state: null }).catch(() => {});
   console.log("[scout] recording stopped", state.recording_id);
 }
 
@@ -721,10 +739,12 @@ async function sendToOffscreen(msg: RuntimeMessage): Promise<void> {
 async function onAudioDone(bytesB64: string, byteLength: number, mimeType: string): Promise<void> {
   const state = await loadSession();
   // The session might already be cleared (stop happened seconds ago) — still upload.
-  const authClient = getAuthSupabase();
   const db = getDataSupabase();
-  const { data: auth } = await authClient.auth.getUser();
-  const userId = state?.user_id ?? auth.user?.id;
+  // Use the token stored at recording-start (same approach as stopRecording).
+  if (state?.access_token) {
+    await db.auth.setSession({ access_token: state.access_token, refresh_token: "" });
+  }
+  const userId = state?.user_id;
   // Look up the most recent uploading recording if no session.
   let recordingId = state?.recording_id;
   if (!recordingId && userId) {
@@ -756,12 +776,13 @@ async function onAudioDone(bytesB64: string, byteLength: number, mimeType: strin
     broadcastRecordingChanged(recordingId, "transcribing");
     await closeOffscreen();
     try {
-      await triggerTranscribe(recordingId);
+      await triggerTranscribe(recordingId, state?.access_token ?? "");
       console.log("[scout] transcribe ok, broadcasting ready", recordingId);
       broadcastRecordingChanged(recordingId, "ready");
     } catch (e) {
       console.warn("[scout] transcribe failed (no-audio path)", e);
       reportError("transcribe_no_audio", e, recordingId);
+      await db.from("recordings").update({ status: "failed" }).eq("id", recordingId);
       broadcastRecordingChanged(recordingId, "failed");
     }
     audioDoneWaiters.get(recordingId)?.();
@@ -788,11 +809,12 @@ async function onAudioDone(bytesB64: string, byteLength: number, mimeType: strin
   await closeOffscreen();
 
   try {
-    await triggerTranscribe(recordingId);
+    await triggerTranscribe(recordingId, state?.access_token ?? "");
     broadcastRecordingChanged(recordingId, "ready");
   } catch (e) {
     console.warn("[scout] transcribe failed", e);
     reportError("transcribe", e, recordingId);
+    await db.from("recordings").update({ status: "failed" }).eq("id", recordingId);
     broadcastRecordingChanged(recordingId, "failed");
   }
   audioDoneWaiters.get(recordingId)?.();
@@ -808,15 +830,13 @@ function base64ToUint8(b64: string): Uint8Array {
 // Retry up to MAX_ATTEMPTS times with exponential backoff (2 s, 4 s).
 // Throws after all attempts are exhausted so callers can mark the
 // recording as failed and surface it to the user.
-async function triggerTranscribe(recordingId: string, attempt = 0): Promise<void> {
+async function triggerTranscribe(recordingId: string, accessToken: string, attempt = 0): Promise<void> {
   const MAX_ATTEMPTS = 3;
-  const authClient = getAuthSupabase();
-  const { data: sess } = await authClient.auth.getSession();
-  if (!sess.session) throw new Error("not authenticated");
+  if (!accessToken) throw new Error("not authenticated");
   try {
     const res = await fetch(functionUrl("transcribe"), {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${sess.session.access_token}` },
+      headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}` },
       body: JSON.stringify({ recording_id: recordingId }),
     });
     if (!res.ok) throw new Error(`transcribe ${res.status}: ${await res.text()}`);
@@ -825,7 +845,7 @@ async function triggerTranscribe(recordingId: string, attempt = 0): Promise<void
       const delayMs = Math.pow(2, attempt + 1) * 2_000; // 2 s, 4 s
       console.warn(`[scout] triggerTranscribe attempt ${attempt + 1}/${MAX_ATTEMPTS} failed, retrying in ${delayMs}ms`, err);
       await new Promise((r) => setTimeout(r, delayMs));
-      return triggerTranscribe(recordingId, attempt + 1);
+      return triggerTranscribe(recordingId, accessToken, attempt + 1);
     }
     throw err;
   }
