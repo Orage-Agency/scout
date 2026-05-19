@@ -21,20 +21,11 @@ let view: View = { kind: "loading" };
 // Accumulates streaming skill chunks — updated in-place without full re-renders.
 let liveStream = "";
 // Preserved from the recording session on stop so extraContextView can show stats.
-let lastStopStats: { event_count: number; shot_count: number; had_voice: boolean } | null = null;
 
 const RECENT_KEY    = "scout:recent_recording_id";
 const MIC_PREF_KEY  = "scout:mic_enabled";
 const MODE_PREF_KEY = "scout:recording_mode";
-const TIER_PREF_KEY = "scout:tier";
 
-type Tier = "quick" | "standard" | "deep";
-
-async function getTier(): Promise<Tier> {
-  const v = await chrome.storage.local.get(TIER_PREF_KEY);
-  const t = v[TIER_PREF_KEY] as string | undefined;
-  return t === "quick" || t === "deep" ? (t as Tier) : "standard";
-}
 
 async function getMicEnabled(): Promise<boolean> {
   const v = await chrome.storage.local.get(MIC_PREF_KEY);
@@ -403,22 +394,10 @@ function recordTab(): HTMLElement {
 
       <!-- Mode row -->
       <div class="flex items-center gap-2">
-        <span class="label" style="font-size:9px;flex:1;">Mode</span>
+        <span class="label" style="font-size:9px;flex:1;">What are you making?</span>
         <div class="flex gap-1">
-          <button id="mode-skill"        class="tab-pill" style="font-size:10px;padding:4px 10px;">Skill</button>
-          <button id="mode-improvement"  class="tab-pill" style="font-size:10px;padding:4px 10px;">Improvements</button>
-        </div>
-      </div>
-
-      <div class="divider-subtle"></div>
-
-      <!-- Tier row -->
-      <div class="flex items-center gap-2">
-        <span class="label" style="font-size:9px;flex:1;">Tier</span>
-        <div class="flex gap-1">
-          <button id="tier-quick"    class="tab-pill" style="font-size:10px;padding:4px 8px;" title="Haiku · no images · ~$0.04">Quick</button>
-          <button id="tier-standard" class="tab-pill" style="font-size:10px;padding:4px 8px;" title="Sonnet 4.6 · ~$0.12">Standard</button>
-          <button id="tier-deep"     class="tab-pill" style="font-size:10px;padding:4px 8px;" title="Opus 4.7 · all images · ~$0.40">Deep</button>
+          <button id="mode-skill"        class="tab-pill" style="font-size:10px;padding:4px 10px;">How-To Guide</button>
+          <button id="mode-improvement"  class="tab-pill" style="font-size:10px;padding:4px 10px;">Bug Report</button>
         </div>
       </div>
 
@@ -427,7 +406,7 @@ function recordTab(): HTMLElement {
       <!-- Mic row -->
       <div class="flex items-center gap-2">
         <span id="mic-icon" style="font-size:13px;transition:opacity 0.15s;flex-shrink:0;">🎙</span>
-        <span class="text-[12px] flex-1" style="color:rgba(255,232,199,0.60);">Voice narration</span>
+        <span class="text-[12px] flex-1" style="color:rgba(255,232,199,0.60);">Narrate as you go</span>
         <button id="mic-toggle" class="tab-pill" style="font-size:10px;min-width:36px;padding:4px 10px;">ON</button>
       </div>
 
@@ -439,9 +418,6 @@ function recordTab(): HTMLElement {
   const micToggleBtn  = d.querySelector<HTMLButtonElement>("#mic-toggle")!;
   const modeSkillBtn  = d.querySelector<HTMLButtonElement>("#mode-skill")!;
   const modeImproveBtn= d.querySelector<HTMLButtonElement>("#mode-improvement")!;
-  const tierQuickBtn  = d.querySelector<HTMLButtonElement>("#tier-quick")!;
-  const tierStdBtn    = d.querySelector<HTMLButtonElement>("#tier-standard")!;
-  const tierDeepBtn   = d.querySelector<HTMLButtonElement>("#tier-deep")!;
   const blurb         = d.querySelector<HTMLParagraphElement>("#mode-blurb")!;
 
   // Mic
@@ -464,23 +440,12 @@ function recordTab(): HTMLElement {
     modeSkillBtn.className   = `tab-pill${!isImprove ? " active" : ""} text-[10px]`;
     modeImproveBtn.className = `tab-pill${isImprove ? " active" : ""} text-[10px]`;
     blurb.innerHTML = isImprove
-      ? `Walk through the app and call out what's broken. Generates an <strong style="color:#E4AF7A;">Improvements brief</strong> you can share with your team.`
-      : `Capture your workflow step-by-step. Generates a <strong style="color:#E4AF7A;">SKILL.md</strong> that an AI agent can replay autonomously.`;
+      ? `Show what's broken or confusing. Scout will write a clear report your team can act on.`
+      : `Do the task as you normally would. Scout will turn your recording into a step-by-step guide.`;
   };
   void getRecordingMode().then(renderMode);
   modeSkillBtn.onclick   = async () => { await chrome.storage.local.set({ [MODE_PREF_KEY]: "skill" }); renderMode("skill"); };
   modeImproveBtn.onclick = async () => { await chrome.storage.local.set({ [MODE_PREF_KEY]: "improvement" }); renderMode("improvement"); };
-
-  // Tier
-  const renderTier = (t: Tier) => {
-    tierQuickBtn.className = `tab-pill${t === "quick"    ? " active" : ""} text-[10px]`;
-    tierStdBtn.className   = `tab-pill${t === "standard" ? " active" : ""} text-[10px]`;
-    tierDeepBtn.className  = `tab-pill${t === "deep"     ? " active" : ""} text-[10px]`;
-  };
-  void getTier().then(renderTier);
-  tierQuickBtn.onclick = async () => { await chrome.storage.local.set({ [TIER_PREF_KEY]: "quick" });    renderTier("quick"); };
-  tierStdBtn.onclick   = async () => { await chrome.storage.local.set({ [TIER_PREF_KEY]: "standard" }); renderTier("standard"); };
-  tierDeepBtn.onclick  = async () => { await chrome.storage.local.set({ [TIER_PREF_KEY]: "deep" });     renderTier("deep"); };
 
   // Blocked page warning
   void chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
@@ -506,12 +471,11 @@ function recordTab(): HTMLElement {
     }
     const micEnabled = await getMicEnabled();
     const mode       = await getRecordingMode();
-    const tier       = await getTier();
     const resp = await chrome.runtime.sendMessage({
       type: "popup:start_recording",
       mic_enabled: micEnabled,
       mode,
-      tier,
+      tier: "standard",
     } satisfies RuntimeMessage);
     if (resp?.state) {
       view = { kind: "recording", state: resp.state };
@@ -921,28 +885,10 @@ function recordingView(s: RecordingSessionState): HTMLElement {
       </div>
     </div>
 
-    <!-- Stats row -->
-    <div class="glass p-3">
-      <div class="flex items-center justify-between mb-2">
-        <div>
-          <div id="evcount" class="text-[12px]" style="color:rgba(255,232,199,0.65);">${s.event_count ?? 0} events</div>
-          <div id="shotcount" class="text-[10px] mt-0.5" style="color:rgba(255,232,199,0.35);">${s.shot_count ?? 0} screenshots</div>
-        </div>
-        <div class="text-right">
-          <div class="label" style="font-size:8px;">tier</div>
-          <div id="tier-display" class="text-[11px] mt-0.5" style="color:rgba(255,232,199,0.50);">Standard</div>
-        </div>
-      </div>
-      <!-- Live richness bar -->
-      <div>
-        <div class="flex items-center justify-between mb-1">
-          <span class="label" style="font-size:8px;">Recording richness</span>
-          <span id="richness-label" class="text-[9px]" style="color:rgba(255,232,199,0.35);">Warming up</span>
-        </div>
-        <div style="height:2px;background:rgba(255,255,255,0.05);border-radius:1px;overflow:hidden;">
-          <div id="richness-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#9A6228,#E4AF7A);border-radius:1px;transition:width 1.5s ease;"></div>
-        </div>
-      </div>
+    <!-- Subtle step count -->
+    <div class="glass p-3 flex items-center justify-between">
+      <div id="evcount" class="text-[12px]" style="color:rgba(255,232,199,0.55);">${s.event_count ?? 0} steps captured</div>
+      <div id="shotcount" class="text-[10px]" style="color:rgba(255,232,199,0.30);">${s.shot_count ?? 0} screenshots</div>
     </div>
 
     <!-- Controls -->
@@ -954,7 +900,7 @@ function recordingView(s: RecordingSessionState): HTMLElement {
 
     <!-- Live event feed -->
     <div class="glass p-3" id="live-feed-card" style="min-height:52px;">
-      <div class="label mb-1.5" style="font-size:8px;">Live capture feed</div>
+      <div class="label mb-1.5" style="font-size:8px;">What Scout is seeing</div>
       <ul id="live-feed" class="flex flex-col gap-0.5"></ul>
     </div>
 
@@ -969,12 +915,6 @@ function recordingView(s: RecordingSessionState): HTMLElement {
       <div id="tip-text" class="text-[11px] leading-relaxed" style="color:rgba(255,232,199,0.55);transition:opacity 0.4s;"></div>
     </div>
   `;
-
-  // Show saved tier
-  void getTier().then(t => {
-    const el = d.querySelector<HTMLDivElement>("#tier-display");
-    if (el) el.textContent = t.charAt(0).toUpperCase() + t.slice(1);
-  });
 
   // Live timer — reads from view.state so it stays accurate across pause/resume.
   const tEl = d.querySelector<HTMLSpanElement>("#t")!;
@@ -1048,11 +988,6 @@ function recordingView(s: RecordingSessionState): HTMLElement {
     stopBtn.disabled = true;
     stopBtn.textContent = "Stopping…";
     const recordingId = s.recording_id;
-    lastStopStats = {
-      event_count: s.event_count ?? 0,
-      shot_count: s.shot_count ?? 0,
-      had_voice: !!(s.mic_enabled && s.live_transcript_tail),
-    };
     await chrome.storage.local.set({ [RECENT_KEY]: recordingId });
     // Await the stop so that if the service worker is sleeping or unreachable
     // the error surfaces instead of being swallowed, and we retry once.
@@ -1115,41 +1050,21 @@ function extraContextView(rec: RecordingRow): HTMLElement {
 
   const dur = rec.duration_ms ? `${Math.round(rec.duration_ms / 1000)}s` : "";
 
-  const evCount   = lastStopStats?.event_count ?? null;
-  const shotCount = lastStopStats?.shot_count ?? null;
-  const hasVoice  = lastStopStats?.had_voice ?? false;
-
   d.innerHTML = `
     <div class="glass p-5 flex flex-col gap-3">
       <div>
-        <div class="display text-[18px]">Any other thoughts?</div>
-        ${dur ? `<div class="text-[10px] mt-1" style="color:rgba(255,232,199,0.40);">${dur} captured · upload running in background</div>` : ""}
+        <div class="display text-[18px]">Anything else to add?</div>
+        ${dur ? `<div class="text-[10px] mt-1" style="color:rgba(255,232,199,0.40);">${dur} recorded · uploading in background</div>` : ""}
       </div>
-      ${evCount !== null ? `
-      <div class="flex gap-3 py-1">
-        <div style="text-align:center;flex:1;">
-          <div class="display text-[20px]" style="color:#E4AF7A;">${evCount}</div>
-          <div class="label" style="font-size:8px;">events</div>
-        </div>
-        <div style="text-align:center;flex:1;">
-          <div class="display text-[20px]" style="color:#E4AF7A;">${shotCount ?? 0}</div>
-          <div class="label" style="font-size:8px;">screenshots</div>
-        </div>
-        <div style="text-align:center;flex:1;">
-          <div class="display text-[20px]" style="color:${hasVoice ? '#4ADE80' : 'rgba(255,232,199,0.35)'};">${hasVoice ? '✓' : '—'}</div>
-          <div class="label" style="font-size:8px;">voice</div>
-        </div>
-      </div>` : ""}
       <p class="text-[12px] leading-relaxed" style="color:rgba(255,232,199,0.60);">
-        If a step had a non-obvious reason — a rule, an exception, a why behind option A vs B — drop a note so the skill captures it.
+        Any context that's hard to see on screen — a rule, an exception, a reason you chose one option over another. Or just skip.
       </p>
-      <textarea id="ec" class="input" rows="5"
-        placeholder="e.g. We always pick earliest delivery for California orders — Prop 65 compliance." style="resize:vertical;min-height:90px;"></textarea>
+      <textarea id="ec" class="input" rows="4"
+        placeholder="e.g. We always pick the earliest delivery date for California — it's a legal thing." style="resize:vertical;min-height:80px;"></textarea>
       <div class="flex gap-2">
         <button id="ec-skip" class="btn flex-1">Skip</button>
-        <button id="ec-save" class="btn btn-primary flex-1">Save &amp; generate</button>
+        <button id="ec-save" class="btn btn-primary flex-1">Generate</button>
       </div>
-      <p class="text-[10px]" style="color:rgba(255,232,199,0.32);">Cmd/Ctrl+Enter to submit.</p>
     </div>
   `;
 
