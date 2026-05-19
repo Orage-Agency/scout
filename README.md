@@ -1,12 +1,35 @@
 # Scout v1
 
-> **Latest update (v0.2.2)** — The coach now hears you in real-time.
-> While you record with your mic on, Scout transcribes your voice every 5 seconds
-> and passes the running transcript to the coaching engine. The questions it surfaces
-> are dramatically more relevant because it knows what you just said, not just what
-> you clicked.
+> **Latest update (v0.2.4)** — Skills generate in the background. Auth race fixed. Scout now watches Claude Code too.
+> Stop a recording, add context, close the popup — Scout generates your skill file silently and notifies you when it's ready.
+> A new Claude Code hook brings Scout's coaching into your dev sessions: it watches every tool call and surfaces
+> suggestions or asks why when something looks off.
 
 A Chrome extension that captures human workflows and turns them into structured `SKILL.md` files for AI agents.
+
+---
+
+## What's new in v0.2.4
+
+### Skill generation runs in the background
+
+Previously you had to keep the popup open while Scout transcribed and generated your skill file. Now the service worker handles everything after you submit your extra context — you can close the popup, switch tabs, or walk away. Chrome sends a notification when the skill is ready.
+
+### Auth race condition fixed
+
+The "Could not start recording. Are you signed in?" error was caused by the service worker calling `getUser()` (a network round-trip) immediately after waking from hibernation, before the session was restored from storage. Fixed by switching to `getSession()`, which reads from `chrome.storage.local` without a network call.
+
+### Cancel recording is now obvious
+
+The discard button is visibly red and labeled **Cancel recording** instead of the muted "Discard recording" it used to be.
+
+### Load unpacked from the repo root
+
+The build now outputs directly to `scout/` so you can point Chrome's Load Unpacked at `C:\Users\...\Downloads\scout` without navigating into `apps/extension/dist`.
+
+### Scout watches Claude Code (via hook)
+
+A new Claude Code `PostToolUse` hook runs Scout's coaching model (Claude Haiku) after every `Bash`, `Write`, and `Edit` call. If it spots a more efficient approach or something irregular, it injects a `Scout:` note into the active conversation. Silent when everything looks fine. Configured in `~/.claude/settings.json`.
 
 ---
 
