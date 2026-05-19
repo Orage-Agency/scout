@@ -56,6 +56,7 @@ export interface RecordingSessionState {
   active_tab_title?: string | null;
   active_tab_url?: string | null;
   live_transcript_tail?: string; // rolling 1500-char buffer of Gemini live transcription
+  is_stopping?: boolean; // set immediately when stopRecording() begins; gates out late content events
 }
 
 export interface CoachAsk {
@@ -103,6 +104,7 @@ export interface SkillRow {
 export type RuntimeMessage =
   | { type: "popup:start_recording"; mic_enabled?: boolean; mode?: "skill" | "improvement"; tier?: "quick" | "standard" | "deep" }
   | { type: "popup:stop_recording" }
+  | { type: "popup:cancel_recording" }
   | { type: "popup:pause_recording" }
   | { type: "popup:resume_recording" }
   | { type: "popup:get_state" }

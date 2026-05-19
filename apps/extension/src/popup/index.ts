@@ -957,6 +957,7 @@ function recordingView(s: RecordingSessionState): HTMLElement {
       <button id="pause" class="btn flex-1">${s.is_paused ? "Resume" : "Pause"}</button>
       <button id="stop" class="btn btn-primary flex-1">Stop</button>
     </div>
+    <button id="discard" class="btn w-full" style="color:rgba(220,80,80,0.6);border-color:rgba(220,80,80,0.15);font-size:11px;">Discard recording</button>
 
     <!-- Live event feed -->
     <div class="glass p-3" id="live-feed-card" style="min-height:52px;">
@@ -1079,6 +1080,33 @@ function recordingView(s: RecordingSessionState): HTMLElement {
       render();
     } else {
       view = { kind: "idle", tab: "library" };
+      render();
+    }
+  };
+
+  let discardConfirming = false;
+  let discardRevertTimer: ReturnType<typeof setTimeout> | null = null;
+  const discardBtn = d.querySelector<HTMLButtonElement>("#discard")!;
+  discardBtn.onclick = async () => {
+    if (!discardConfirming) {
+      discardConfirming = true;
+      discardBtn.textContent = "Tap again to confirm delete";
+      discardBtn.style.color = "#EF4444";
+      discardBtn.style.borderColor = "rgba(239,68,68,0.4)";
+      discardRevertTimer = setTimeout(() => {
+        discardConfirming = false;
+        discardBtn.textContent = "Discard recording";
+        discardBtn.style.color = "rgba(220,80,80,0.6)";
+        discardBtn.style.borderColor = "rgba(220,80,80,0.15)";
+      }, 3000);
+    } else {
+      if (discardRevertTimer) clearTimeout(discardRevertTimer);
+      discardBtn.disabled = true;
+      discardBtn.textContent = "Discarding…";
+      try {
+        await chrome.runtime.sendMessage({ type: "popup:cancel_recording" } satisfies RuntimeMessage);
+      } catch { /* SW may be asleep */ }
+      view = { kind: "idle", tab: "record" };
       render();
     }
   };

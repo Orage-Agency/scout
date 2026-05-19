@@ -107,3 +107,25 @@ pnpm build
 
 Opens a dedicated Chrome window with the extension preloaded into a profile
 at `%LOCALAPPDATA%\Scout\Profile`.
+
+## v0.2.4 — Stop pipeline hardening (2026-05-18)
+
+Fixes a critical bug where clicking the red-square stop button did not reliably
+stop the offscreen MediaRecorder, causing extra audio to be appended to
+recordings. Four root causes were patched:
+
+1. **Concurrent stop calls** — `stopInFlight` Promise deduplicates all callers.
+2. **Hung offscreen after timeout** — `closeOffscreen()` is now called when the
+   `audio_done` 8-second timeout fires, guaranteeing the mic indicator clears.
+3. **Late content events during teardown** — `is_stopping` flag written to
+   session state before any async work begins; `onContentEvent` and
+   `captureTabAndQueue` both gate on it.
+4. **Silent control-bar failure** — Stop button now shows "…" immediately on
+   click, retries once if the SW is waking up, and shows "!" with a tooltip if
+   both attempts fail.
+
+Additional safeguards: 30-minute max-duration auto-stop with notification;
+SW cold-start detects a dead offscreen (mic session lost on browser restart)
+and marks the recording failed rather than silently resuming without audio.
+
+Added `"notifications"` permission to manifest.

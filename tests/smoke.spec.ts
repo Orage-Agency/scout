@@ -122,3 +122,158 @@ test("simulated workflow page", async () => {
   // Page should still be present (anchor doesn't navigate away).
   await expect(page.locator("h1")).toHaveText("Scout test page");
 });
+
+// ---- Stop-recording pipeline tests ----
+// These tests inject a synthetic session into chrome.storage.session and
+// exercise the SW stop path via chrome.runtime.sendMessage from the popup
+// page context. Supabase DB calls inside stopRecording() will fail (no valid
+// auth token in the synthetic session) — we assert on observable side-effects
+// (session cleared, badge cleared) rather than the DB row status.
+
+async function seedFakeSession(sw: import("@playwright/test").Worker, recordingId: string): Promise<void> {
+  // Pass the full session object as the argument so no TypeScript annotations
+  // appear in the serialized function body (worker.evaluate stringifies the fn).
+  await sw.evaluate((session) =>
+    chrome.storage.session.set({ recording_session: session }),
+    {
+      recording_id: recordingId,
+      user_id: "smoke-test-user",
+      access_token: "",
+      started_at: Date.now() - 5000,
+      paused_ms: 0,
+      is_paused: false,
+      audio_supported: false,
+      mic_enabled: false,
+      mode: "skill",
+      ask_count: 0,
+      last_ask_at: 0,
+      event_count: 3,
+      shot_count: 1,
+    },
+  );
+}
+
+// Open a stable popup page and wait for it to load before each stop test.
+// This ensures all tab-lifecycle events (onActivated, onUpdated) have fired
+// and settled with a null session BEFORE we seed the fake session, eliminating
+// the race where a delayed onUpdated write-back restores a just-cleared session.
+async function openStablePopupPage(extId: string): Promise<import("@playwright/test").Page> {
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extId}/src/popup/index.html`);
+  // Wait for the popup to finish its async init (auth check, get_state).
+  await popup.waitForLoadState("networkidle");
+  return popup;
+}
+
+test("stop: session cleared after popup:stop_recording (no-audio path)", async () => {
+  let [sw] = context.serviceWorkers();
+  if (!sw) sw = await context.waitForEvent("serviceworker");
+  const extId = new URL(sw.url()).host;
+
+  // Open popup FIRST so tab events settle with no session, THEN seed.
+  const popup = await openStablePopupPage(extId);
+
+  const REC_ID = `smoke-stop-${Date.now()}`;
+  await seedFakeSession(sw, REC_ID);
+
+  // Verify session was seeded.
+  const before = await sw.evaluate(() =>
+    chrome.storage.session.get("recording_session").then((v) => v.recording_session ?? null),
+  );
+  expect(before).not.toBeNull();
+
+  // Send stop from the popup page context (same channel as the real popup/control-bar).
+  await popup.evaluate(() =>
+    new Promise<void>((resolve) =>
+      chrome.runtime.sendMessage({ type: "popup:stop_recording" }, () => resolve()),
+    ),
+  );
+
+  // Session must be null after stop.
+  const after = await sw.evaluate(() =>
+    chrome.storage.session.get("recording_session").then((v) => v.recording_session ?? null),
+  );
+  expect(after).toBeNull();
+
+  // Badge must be cleared.
+  const badge = await sw.evaluate(() => chrome.action.getBadgeText({}));
+  expect(badge).toBe("");
+
+  await popup.close();
+});
+
+test("stop: double popup:stop_recording is idempotent (no crash, session cleared once)", async () => {
+  let [sw] = context.serviceWorkers();
+  if (!sw) sw = await context.waitForEvent("serviceworker");
+  const extId = new URL(sw.url()).host;
+
+  const popup = await openStablePopupPage(extId);
+
+  const REC_ID = `smoke-double-stop-${Date.now()}`;
+  await seedFakeSession(sw, REC_ID);
+
+  // Fire two stop messages concurrently — stopInFlight deduplicates them.
+  await popup.evaluate(() =>
+    Promise.all([
+      new Promise<void>((r) => chrome.runtime.sendMessage({ type: "popup:stop_recording" }, () => r())),
+      new Promise<void>((r) => chrome.runtime.sendMessage({ type: "popup:stop_recording" }, () => r())),
+    ]),
+  );
+
+  // Session must be cleared exactly to null (not stuck in is_stopping).
+  const after = await sw.evaluate(() =>
+    chrome.storage.session.get("recording_session").then((v) => v.recording_session ?? null),
+  );
+  expect(after).toBeNull();
+
+  await popup.close();
+});
+
+test("stop: content events dropped while is_stopping", async () => {
+  let [sw] = context.serviceWorkers();
+  if (!sw) sw = await context.waitForEvent("serviceworker");
+  const extId = new URL(sw.url()).host;
+
+  // Open popup FIRST (tab events fire with no session → return early).
+  const popup = await openStablePopupPage(extId);
+
+  const REC_ID = `smoke-stop-gate-${Date.now()}`;
+  // Seed session with is_stopping=true AFTER popup is stable.
+  await sw.evaluate((session) =>
+    chrome.storage.session.set({ recording_session: session }),
+    {
+      recording_id: REC_ID,
+      user_id: "smoke-test-user",
+      access_token: "",
+      started_at: Date.now() - 5000,
+      paused_ms: 0,
+      is_paused: false,
+      is_stopping: true,
+      audio_supported: false,
+      mic_enabled: false,
+      mode: "skill",
+      ask_count: 0,
+      last_ask_at: 0,
+      event_count: 3,
+      shot_count: 1,
+    },
+  );
+
+  // Send a content event — should be silently dropped (event_count stays 3).
+  await popup.evaluate(() =>
+    new Promise<void>((r) =>
+      chrome.runtime.sendMessage(
+        { type: "content:event", event: { kind: "click", ts_ms: 0, data: {}, _localId: "test" } },
+        () => r(),
+      ),
+    ),
+  );
+
+  const session = await sw.evaluate(() =>
+    chrome.storage.session.get("recording_session").then((v) => v.recording_session ?? null),
+  );
+  // event_count must still be 3 — the event was gated out by is_stopping.
+  expect(session?.event_count).toBe(3);
+
+  await popup.close();
+});

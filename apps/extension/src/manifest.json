@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Scout",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Capture workflows. Generate skill files for AI agents.",
   "action": {
     "default_popup": "src/popup/index.html",
@@ -27,7 +27,8 @@
     "storage",
     "offscreen",
     "clipboardRead",
-    "webNavigation"
+    "webNavigation",
+    "notifications"
   ],
   "host_permissions": ["<all_urls>"],
   "web_accessible_resources": [

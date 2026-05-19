@@ -224,6 +224,7 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
       <span data-scout-mic aria-label="Microphone active" title="Voice narration is recording" style="font-size:12px;display:none;animation:scout-mic-pulse 2s ease-in-out infinite;" role="img">🎙</span>
       <button data-scout-pause aria-label="Pause" style="background:transparent;border:0;color:#FFE8C7;cursor:pointer;padding:6px;font-size:14px;">⏸</button>
       <button data-scout-stop aria-label="Stop" style="background:transparent;border:0;color:#DC2626;cursor:pointer;padding:6px;font-weight:700;font-size:14px;">■</button>
+      <button data-scout-discard aria-label="Discard recording" title="Discard recording" style="background:transparent;border:0;color:rgba(220,80,80,0.5);cursor:pointer;padding:4px 3px;font-size:11px;line-height:1;">✕</button>
     `;
     if (!document.getElementById("scout-style")) {
       const st = document.createElement("style");
@@ -282,8 +283,57 @@ import type { CapturedEvent, RuntimeMessage } from "../lib/types";
       bar!.setAttribute("data-paused", String(!isPaused));
       updatePauseVisual(!isPaused);
     });
+    let stopClicked = false;
     bar.querySelector("[data-scout-stop]")?.addEventListener("click", async () => {
-      await chrome.runtime.sendMessage({ type: "popup:stop_recording" } satisfies RuntimeMessage).catch(() => {});
+      if (stopClicked) return;
+      stopClicked = true;
+      const stopBtn = bar!.querySelector<HTMLButtonElement>("[data-scout-stop]");
+      if (stopBtn) {
+        stopBtn.disabled = true;
+        stopBtn.textContent = "…";
+        stopBtn.title = "Stopping recording…";
+        stopBtn.style.opacity = "0.6";
+      }
+      let stopped = false;
+      for (let attempt = 0; attempt < 2 && !stopped; attempt++) {
+        try {
+          await chrome.runtime.sendMessage({ type: "popup:stop_recording" } satisfies RuntimeMessage);
+          stopped = true;
+        } catch {
+          await new Promise((r) => setTimeout(r, 300));
+        }
+      }
+      if (!stopped && stopBtn) {
+        // Both attempts failed — SW unreachable. Show error state with retry hint.
+        stopBtn.textContent = "!";
+        stopBtn.title = "Stop failed — open the Scout popup to force stop";
+        stopBtn.style.color = "#EF4444";
+        stopBtn.style.opacity = "1";
+        stopBtn.disabled = false;
+        stopClicked = false;
+      }
+    });
+
+    let discardArmed = false;
+    let discardRevertTimer: ReturnType<typeof setTimeout> | null = null;
+    bar.querySelector("[data-scout-discard]")?.addEventListener("click", async () => {
+      const btn = bar!.querySelector<HTMLButtonElement>("[data-scout-discard]");
+      if (!discardArmed) {
+        discardArmed = true;
+        if (btn) { btn.textContent = "✕?"; btn.style.color = "#EF4444"; }
+        discardRevertTimer = setTimeout(() => {
+          discardArmed = false;
+          if (btn && btn.textContent === "✕?") {
+            btn.textContent = "✕";
+            btn.style.color = "rgba(220,80,80,0.5)";
+          }
+        }, 3000);
+      } else {
+        if (discardRevertTimer) clearTimeout(discardRevertTimer);
+        discardArmed = false;
+        if (btn) { btn.disabled = true; btn.textContent = "…"; }
+        await chrome.runtime.sendMessage({ type: "popup:cancel_recording" } satisfies RuntimeMessage).catch(() => {});
+      }
     });
 
     // Keep timer ticking — subtracts accumulated paused time and freezes while paused.

@@ -38,6 +38,17 @@ function pushCoachRing(ev: CapturedEvent): void {
 let flushTimer: number | null = null;
 let coachTimer: number | null = null;
 
+// Prevents concurrent stop calls. JS is single-threaded so the flag+assignment
+// are atomic; any second caller that arrives before the first await sees the
+// in-flight promise and returns it directly.
+let stopInFlight: Promise<void> | null = null;
+
+// Synchronous stopping flag — set BEFORE the first await in stopRecording() so
+// that any concurrent handler whose chrome.storage GET is already in-flight
+// will see this flag when its callback fires and abort rather than writing stale
+// data back over the null session that _doStopRecording() will have stored.
+let isSessionStopping = false;
+
 // Exponential backoff for flush failures. Tracks consecutive upload errors so
 // we don't hammer a down Supabase endpoint every 5 s. Resets to 0 on any
 // successful flush. nextFlushAllowedAt is epoch ms; flushBuffer() returns
@@ -163,17 +174,30 @@ async function startRecording(
   return state;
 }
 
-async function stopRecording(): Promise<void> {
+// Public entry point — idempotent. Any number of concurrent callers (control
+// bar, popup, keyboard shortcut, max-duration alarm) all get the same Promise.
+function stopRecording(): Promise<void> {
+  if (stopInFlight) return stopInFlight;
+  isSessionStopping = true;  // synchronous — visible to any handler already past its guard
+  stopInFlight = _doStopRecording().finally(() => { stopInFlight = null; isSessionStopping = false; });
+  return stopInFlight;
+}
+
+async function _doStopRecording(): Promise<void> {
   const state = await loadSession();
   if (!state) return;
+
+  // Mark as stopping immediately and persist — this gates out all concurrent
+  // tab-lifecycle writers (onActivated, onUpdated, bumpCounters) before any
+  // async DB or network work begins.
+  state.is_stopping = true;
+  await saveSession(state);
 
   stopTimers();
   await broadcastToTabs({ type: "content:hide_control_bar" });
   chrome.action.setBadgeText({ text: "" });
   await flushBuffer();
 
-  // Use the access token stored at recording-start — it was captured while the
-  // auth client was warm and avoids the async bridge race on SW wake-up.
   const db = getDataSupabase();
   if (state.access_token) {
     await db.auth.setSession({ access_token: state.access_token, refresh_token: "" });
@@ -181,59 +205,47 @@ async function stopRecording(): Promise<void> {
   const endedAt = Date.now();
   const durationMs = endedAt - state.started_at - state.paused_ms;
 
-  // 1a. Voice narration disabled — no audio to upload or transcribe. Go
-  //     straight to ready with an empty transcript so the skill generator
-  //     can run immediately from events + screenshots alone.
+  // Clear the session BEFORE any fallible network calls so that concurrent
+  // tab-lifecycle handlers that are about to call saveSession(state) with a
+  // stale object find the session gone and abort instead of restoring it.
+  // onAudioDone falls back to a DB lookup for recording_id when session is null.
+  await saveSession(null);
+  await chrome.runtime.sendMessage({ type: "popup:state", state: null }).catch(() => {});
+
+  // 1a. Voice narration disabled — no audio to upload or transcribe.
   if (state.mic_enabled === false) {
-    await db
-      .from("recordings")
-      .update({
+    // Best-effort DB update — failure here doesn't affect teardown.
+    await Promise.resolve(
+      db.from("recordings").update({
         status: "ready",
         ended_at: new Date(endedAt).toISOString(),
         duration_ms: durationMs,
         transcript: { segments: [] },
-      })
-      .eq("id", state.recording_id);
+      }).eq("id", state.recording_id)
+    ).catch((e: unknown) => console.warn("[scout] stop DB update failed (no-audio)", e));
     broadcastRecordingChanged(state.recording_id, "ready");
-    // Defensive: in case an offscreen document was opened by a race
-    // (e.g. the user toggled mic mid-recording in a future build), make
-    // sure it's closed so the mic + the offscreen page don't leak.
     await closeOffscreen();
-    await saveSession(null);
-    await chrome.runtime.sendMessage({ type: "popup:state", state: null }).catch(() => {});
     console.log("[scout] recording stopped (no audio)", state.recording_id);
     return;
   }
 
-  // 1b. Mark the row as ended + uploading. Single atomic update; no further
-  //     writes happen here.
-  await db
-    .from("recordings")
-    .update({
+  // 1b. Best-effort DB update — mark as uploading.
+  await Promise.resolve(
+    db.from("recordings").update({
       status: "uploading",
       ended_at: new Date(endedAt).toISOString(),
       duration_ms: durationMs,
-    })
-    .eq("id", state.recording_id);
+    }).eq("id", state.recording_id)
+  ).catch((e: unknown) => console.warn("[scout] stop DB update failed (audio)", e));
   broadcastRecordingChanged(state.recording_id, "uploading");
 
-  // Clear session immediately after the DB status is set so that if the popup
-  // reopens during the audio upload (or if the service worker is killed before
-  // onAudioDone completes), the popup sees "uploading" status rather than
-  // "recording in progress." onAudioDone falls back to a DB lookup when the
-  // session is already cleared.
-  await saveSession(null);
-  await chrome.runtime.sendMessage({ type: "popup:state", state: null }).catch(() => {});
-
-  // 2. Tell offscreen to wrap up. We await the response so we know stop()
-  //    has finished and audio_done has been *sent* by the time this resolves.
-  //    The audio_done message is processed by our own onMessage listener
-  //    (onAudioDone) which moves status through transcribing -> ready.
+  // 2. Tell offscreen to stop. Set up the waiter FIRST so we don't miss the
+  //    audio_done message if the offscreen is very fast.
   const audioPromise = waitForAudioDone(state.recording_id, 8000);
   try {
     await chrome.runtime.sendMessage({ type: "offscreen:stop_audio" } satisfies RuntimeMessage);
   } catch {
-    /* offscreen may have been closed already; we still wait for audio_done */
+    /* offscreen may already be closed; we still wait for audio_done */
   }
   await audioPromise;
   console.log("[scout] recording stopped", state.recording_id);
@@ -252,11 +264,45 @@ function waitForAudioDone(recordingId: string, timeoutMs: number): Promise<void>
     audioDoneWaiters.set(recordingId, done);
     setTimeout(() => {
       if (audioDoneWaiters.has(recordingId)) {
-        console.warn("[scout] audio_done timeout for", recordingId);
+        console.warn("[scout] audio_done timeout for", recordingId, "— force-closing offscreen");
+        // Force-close the offscreen document so the mic indicator clears and
+        // the MediaRecorder definitely stops. Without this, a hung offscreen
+        // keeps recording indefinitely after the SW considers the session done.
+        void closeOffscreen();
         done();
       }
     }, timeoutMs);
   });
+}
+
+// Discard: tear down immediately without uploading or generating a skill.
+// Force-closes the offscreen document (kills the MediaRecorder), clears
+// session state, then deletes the recording row from the DB.
+async function cancelRecording(): Promise<void> {
+  if (stopInFlight) return; // stop already in progress; let it finish
+  isSessionStopping = true;
+  const state = await loadSession();
+  if (!state) { isSessionStopping = false; return; }
+
+  stopTimers();
+  await saveSession(null);
+  await broadcastToTabs({ type: "content:hide_control_bar" });
+  chrome.action.setBadgeText({ text: "" });
+  chrome.runtime.sendMessage({ type: "popup:state", state: null } satisfies RuntimeMessage).catch(() => {});
+
+  // Force-close offscreen — kills the MediaRecorder immediately without uploading audio.
+  await closeOffscreen();
+
+  const db = getDataSupabase();
+  if (state.access_token) {
+    await db.auth.setSession({ access_token: state.access_token, refresh_token: "" }).catch(() => {});
+  }
+  await Promise.resolve(
+    db.from("recordings").delete().eq("id", state.recording_id)
+  ).catch((e: unknown) => console.warn("[scout] cancel: delete failed (non-fatal)", e));
+
+  isSessionStopping = false;
+  console.log("[scout] recording discarded", state.recording_id);
 }
 
 async function pauseRecording(): Promise<void> {
@@ -294,12 +340,14 @@ async function resumeRecording(): Promise<void> {
 
 const ALARM_FLUSH = "scout-flush";
 const ALARM_COACH = "scout-coach";
+const ALARM_MAX_DURATION = "scout-max-duration";
 // chrome.alarms minimum period in production builds is 30s. We accept the
 // trade: during a hibernate-and-wake cycle, the next flush could be up to
 // 30s late instead of 5s late. Mid-recording, when the user is interacting,
 // the setInterval below fires every 5s as expected.
 const ALARM_FLUSH_MIN = 0.5; // 30s in minutes
 const ALARM_COACH_MIN = 0.5; // 30s, same as the existing coach cadence
+const MAX_RECORDING_MIN = 30; // auto-stop after 30 min
 
 function startTimers(): void {
   stopTimers();
@@ -308,6 +356,8 @@ function startTimers(): void {
   // Schedule alarms so a hibernated worker is woken up to flush.
   chrome.alarms.create(ALARM_FLUSH, { periodInMinutes: ALARM_FLUSH_MIN });
   chrome.alarms.create(ALARM_COACH, { periodInMinutes: ALARM_COACH_MIN });
+  // One-shot alarm: auto-stop if recording exceeds the maximum duration.
+  chrome.alarms.create(ALARM_MAX_DURATION, { delayInMinutes: MAX_RECORDING_MIN });
 }
 
 function stopTimers(): void {
@@ -321,6 +371,7 @@ function stopTimers(): void {
   }
   chrome.alarms.clear(ALARM_FLUSH).catch(() => {});
   chrome.alarms.clear(ALARM_COACH).catch(() => {});
+  chrome.alarms.clear(ALARM_MAX_DURATION).catch(() => {});
 }
 
 // Alarm handler: woken up after hibernation, run the catch-up flush + coach.
@@ -329,6 +380,7 @@ function stopTimers(): void {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_FLUSH) void flushBuffer();
   else if (alarm.name === ALARM_COACH) void runCoachCycle();
+  else if (alarm.name === ALARM_MAX_DURATION) void autoStopForMaxDuration();
 });
 
 // ---- Event ingestion ----
@@ -356,7 +408,7 @@ async function maybeAutoTitle(state: RecordingSessionState, ev: CapturedEvent): 
 
 async function onContentEvent(ev: CapturedEvent, sender: chrome.runtime.MessageSender): Promise<void> {
   const state = await loadSession();
-  if (!state || state.is_paused) return;
+  if (!state || state.is_paused || state.is_stopping || isSessionStopping) return;
 
   ev.recording_id = state.recording_id;
   ev.user_id = state.user_id;
@@ -428,7 +480,7 @@ async function captureTabAndQueue(
   data: Record<string, unknown>,
 ): Promise<void> {
   const state = await loadSession();
-  if (!state || state.is_paused) return;
+  if (!state || state.is_paused || state.is_stopping || isSessionStopping) return;
 
   const ev: CapturedEvent = {
     recording_id: state.recording_id,
@@ -516,9 +568,13 @@ function describeEvent(ev: CapturedEvent): string | null {
 // cheap (chrome.storage.session is in-memory) and tolerable per event.
 async function bumpCounters(ev: CapturedEvent): Promise<void> {
   const s = await loadSession();
-  if (!s) return;
+  if (!s || s.is_stopping || isSessionStopping) return;
   s.event_count = (s.event_count ?? 0) + 1;
   if (ev.screenshot_path) s.shot_count = (s.shot_count ?? 0) + 1;
+  // Re-read before writing: if stop ran or a new session started while we were
+  // async, abort rather than clobber the current (null or new) session.
+  const current = await loadSession();
+  if (!current || current.is_stopping || isSessionStopping || current.recording_id !== s.recording_id) return;
   await saveSession(s);
   chrome.runtime
     .sendMessage({
@@ -706,6 +762,21 @@ async function runCoachCycle(): Promise<void> {
   }
 }
 
+// ---- Max-duration safeguard ----
+
+async function autoStopForMaxDuration(): Promise<void> {
+  const state = await loadSession();
+  if (!state) return;
+  console.log("[scout] max recording duration reached — auto-stopping", state.recording_id);
+  await stopRecording();
+  chrome.notifications.create("scout-max-duration", {
+    type: "basic",
+    iconUrl: "public/icons/icon-48.png",
+    title: "Scout — Recording stopped",
+    message: `Maximum recording duration (${MAX_RECORDING_MIN} min) reached. Your recording has been saved.`,
+  });
+}
+
 // ---- Offscreen document ----
 
 const OFFSCREEN_PATH = "src/offscreen/index.html";
@@ -855,19 +926,21 @@ async function triggerTranscribe(recordingId: string, accessToken: string, attem
 
 chrome.tabs.onActivated.addListener(async (info) => {
   const state = await loadSession();
-  if (!state || state.is_paused) return;
+  if (!state || state.is_paused || state.is_stopping || isSessionStopping) return;
   const tab = await chrome.tabs.get(info.tabId).catch(() => null);
   await captureTabAndQueue(info.tabId, tab?.windowId ?? null, "tab_switch", {
     to_tab_id: info.tabId,
     to_tab_url: tab?.url ?? null,
     to_tab_title: tab?.title ?? null,
   });
-  // Update the popup's "current tab" indicator.
-  state.active_tab_title = tab?.title ?? null;
-  state.active_tab_url = tab?.url ?? null;
-  await saveSession(state);
+  // Re-read before writing back — stop may have run while we were async.
+  const current = await loadSession();
+  if (!current || current.is_stopping || isSessionStopping) return;
+  current.active_tab_title = tab?.title ?? null;
+  current.active_tab_url = tab?.url ?? null;
+  await saveSession(current);
   chrome.runtime
-    .sendMessage({ type: "popup:state", state } satisfies RuntimeMessage)
+    .sendMessage({ type: "popup:state", state: current } satisfies RuntimeMessage)
     .catch(() => {});
   // Make sure the new tab has the control bar.
   if (tab?.id) chrome.tabs.sendMessage(tab.id, { type: "content:show_control_bar" } satisfies RuntimeMessage).catch(() => {});
@@ -879,18 +952,21 @@ chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
   if (!tab.active) return;
   if (!changeInfo.title && !changeInfo.url) return;
   const state = await loadSession();
-  if (!state) return;
-  state.active_tab_title = tab.title ?? state.active_tab_title;
-  state.active_tab_url = tab.url ?? state.active_tab_url;
-  await saveSession(state);
+  if (!state || state.is_stopping || isSessionStopping) return;
+  // Re-read before writing back — stop may have run while we were async.
+  const current = await loadSession();
+  if (!current || current.is_stopping || isSessionStopping) return;
+  current.active_tab_title = tab.title ?? current.active_tab_title;
+  current.active_tab_url = tab.url ?? current.active_tab_url;
+  await saveSession(current);
   chrome.runtime
-    .sendMessage({ type: "popup:state", state } satisfies RuntimeMessage)
+    .sendMessage({ type: "popup:state", state: current } satisfies RuntimeMessage)
     .catch(() => {});
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const state = await loadSession();
-  if (!state) return;
+  if (!state || state.is_stopping || isSessionStopping) return;
   const ev: CapturedEvent = {
     recording_id: state.recording_id,
     user_id: state.user_id,
@@ -932,16 +1008,19 @@ chrome.webNavigation?.onHistoryStateUpdated?.addListener((details) => {
     historyNavTimer = null;
     void (async () => {
       const state = await loadSession();
-      if (!state || state.is_paused) return;
+      if (!state || state.is_paused || state.is_stopping || isSessionStopping) return;
       const tab = await chrome.tabs.get(details.tabId).catch(() => null);
       await captureTabAndQueue(details.tabId, tab?.windowId ?? null, "navigation", {
         to_url: details.url,
         spa: true,
       });
-      state.active_tab_url = details.url;
-      if (tab?.title) state.active_tab_title = tab.title;
-      await saveSession(state);
-      chrome.runtime.sendMessage({ type: "popup:state", state } satisfies RuntimeMessage).catch(() => {});
+      // Re-read before writing back — stop may have run while we were async.
+      const current = await loadSession();
+      if (!current || current.is_stopping || isSessionStopping) return;
+      current.active_tab_url = details.url;
+      if (tab?.title) current.active_tab_title = tab.title;
+      await saveSession(current);
+      chrome.runtime.sendMessage({ type: "popup:state", state: current } satisfies RuntimeMessage).catch(() => {});
     })();
   }, 500);
 });
@@ -1030,6 +1109,11 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse)
         }
         case "popup:stop_recording": {
           await stopRecording();
+          sendResponse({ ok: true });
+          break;
+        }
+        case "popup:cancel_recording": {
+          await cancelRecording();
           sendResponse({ ok: true });
           break;
         }
@@ -1193,15 +1277,48 @@ chrome.commands.onCommand.addListener((command) => {
 });
 
 // On worker wake after hibernation or cold-start:
-//  - Active session → restart timers + restore badge. The flush/coach
-//    alarms already fire on wake; startTimers() re-registers them.
-//  - Paused session → restore the "paused" badge without restarting timers
-//    (timers are intentionally stopped while paused).
-//  - No session (browser restart) → clear badge and auto-fail any recordings
-//    that were left stuck in recording/uploading/transcribing status.
+//  - Active session with live offscreen → restart timers + restore badge.
+//  - Active session but mic_enabled and offscreen is dead (SW was killed
+//    while recording audio) → reconcile: mark session ended-unexpectedly,
+//    tear down, notify user. Audio is lost but events are safely in DB.
+//  - Paused session → restore the "paused" badge without restarting timers.
+//  - No session → clear badge and auto-fail stale DB rows.
 (async () => {
   const state = await loadSession();
-  if (state && !state.is_paused) {
+  if (state && !state.is_paused && !state.is_stopping) {
+    if (state.mic_enabled) {
+      // Check if the offscreen document survived the SW restart.
+      const ctxs = await chrome.runtime
+        .getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT" as chrome.runtime.ContextType] })
+        .catch(() => [] as chrome.runtime.ExtensionContext[]);
+      if (ctxs.length === 0) {
+        // Offscreen is dead — audio capture is lost. Mark the recording as
+        // failed and notify the user rather than silently resuming without audio.
+        console.warn("[scout] SW restarted with dead offscreen — marking recording ended-unexpectedly", state.recording_id);
+        const db = getDataSupabase();
+        if (state.access_token) {
+          await db.auth.setSession({ access_token: state.access_token, refresh_token: "" }).catch(() => {});
+        }
+        await Promise.resolve(
+          db.from("recordings").update({
+            status: "failed",
+            ended_at: new Date().toISOString(),
+            duration_ms: Date.now() - state.started_at - state.paused_ms,
+          }).eq("id", state.recording_id)
+        ).catch(() => {});
+        broadcastRecordingChanged(state.recording_id, "failed");
+        await saveSession(null);
+        chrome.action.setBadgeText({ text: "" });
+        chrome.notifications.create("scout-sw-interrupted", {
+          type: "basic",
+          iconUrl: "public/icons/icon-48.png",
+          title: "Scout — Recording interrupted",
+          message: "The browser extension restarted mid-recording. Your captured events were saved; audio was lost.",
+        });
+        void failStaleRecordings();
+        return;
+      }
+    }
     startTimers();
     chrome.action.setBadgeText({ text: "REC" });
     chrome.action.setBadgeBackgroundColor({ color: "#DC2626" });
