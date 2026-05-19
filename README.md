@@ -1,11 +1,23 @@
 # Scout v1
 
-> **Latest update (v0.2.4)** — Skills generate in the background. Auth race fixed. Scout now watches Claude Code too.
-> Stop a recording, add context, close the popup — Scout generates your skill file silently and notifies you when it's ready.
-> A new Claude Code hook brings Scout's coaching into your dev sessions: it watches every tool call and surfaces
-> suggestions or asks why when something looks off.
+> **Latest update (v0.2.5)** — Scout now watches Claude Code in real time.
+> Every tool call (before and after) is broadcast to a live feed inside the Scout popup.
+> Open the **Code** tab — a green dot confirms the channel is live and events stream in as they happen.
 
 A Chrome extension that captures human workflows and turns them into structured `SKILL.md` files for AI agents.
+
+---
+
+## What's new in v0.2.5
+
+### Real-time Claude Code feed
+
+Scout now observes every Claude Code tool call the moment it happens — not just after the fact.
+
+- **PreToolUse + PostToolUse hooks** on all tool types (`Bash`, `Write`, `Edit`, `Read`, `Glob`, `Grep`) fire `scripts/scout-broadcast.cjs`, a lightweight Node.js script that reads the hook payload from stdin and broadcasts it to a Supabase Realtime channel named `scout-code`.
+- The **Code tab** in the Scout popup subscribes to that channel. Events appear within a second, newest at the top, showing tool name, hook phase (Pre/Post), first line of input, and relative timestamp. A green dot in the tab header confirms the Realtime connection is live.
+- The PostToolUse **coaching prompt** (Claude Haiku) is retained on `Bash`, `Write`, and `Edit` — Scout still injects a note if it spots something off.
+- `SUPABASE_URL` and `SUPABASE_ANON_KEY` are now set as env vars in `~/.claude/settings.json` so the broadcast script works without any extra configuration.
 
 ---
 
