@@ -1,10 +1,24 @@
 # Scout v1
 
-> **Latest update (v0.2.5)** — Scout now watches Claude Code in real time.
-> Every tool call (before and after) is broadcast to a live feed inside the Scout popup.
-> Open the **Code** tab — a green dot confirms the channel is live and events stream in as they happen.
+> **Latest update (v0.2.6)** — Simpler, friendlier UI for everyone.
+> Tier picker removed. Modes renamed to How-To Guide and Bug Report. Plain English everywhere.
 
 A Chrome extension that captures human workflows and turns them into structured `SKILL.md` files for AI agents.
+
+---
+
+## What's new in v0.2.6
+
+### Simplified UI
+
+The popup has been stripped of everything a non-technical user doesn't need:
+
+- **Tier picker removed** — Standard quality is always used. No model names, no pricing.
+- **Modes renamed** — "Skill" → **How-To Guide**, "Improvements" → **Bug Report**. Plain words.
+- **Blurbs rewritten** — "Do the task as you normally would. Scout will turn your recording into a step-by-step guide." No jargon.
+- **Recording view decluttered** — Richness bar, event count, screenshot count, and tier badge are gone. Just the timer and a quiet step counter.
+- **Extra context screen simplified** — Shorter heading, friendlier copy, "Generate" button instead of "Save & generate".
+- **Live feed** renamed from "Live capture feed" to "What Scout is seeing".
 
 ---
 
