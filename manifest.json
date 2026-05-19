@@ -1,0 +1,68 @@
+{
+  "manifest_version": 3,
+  "name": "Scout",
+  "version": "0.2.4",
+  "description": "Capture workflows. Generate skill files for AI agents.",
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_title": "Scout"
+  },
+  "background": {
+    "service_worker": "service-worker-loader.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "js": [
+        "assets/index.ts-loader-DX_5BlsH.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "permissions": [
+    "activeTab",
+    "alarms",
+    "tabs",
+    "scripting",
+    "storage",
+    "offscreen",
+    "clipboardRead",
+    "webNavigation",
+    "notifications"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "web_accessible_resources": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "resources": [
+        "src/offscreen/index.html",
+        "assets/*",
+        "assets/ids-BvfB8T44.js",
+        "assets/index.ts-DgB17JPa.js"
+      ],
+      "use_dynamic_url": false
+    }
+  ],
+  "commands": {
+    "toggle-recording": {
+      "suggested_key": {
+        "default": "Alt+Shift+R"
+      },
+      "description": "Start or stop recording"
+    }
+  },
+  "icons": {
+    "16": "public/icons/icon-16.png",
+    "32": "public/icons/icon-32.png",
+    "48": "public/icons/icon-48.png",
+    "128": "public/icons/icon-128.png"
+  }
+}
