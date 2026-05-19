@@ -1,4 +1,4 @@
-// Popup UI — vanilla TS rendering. Four tabs: Record, Library, Code, Settings.
+// Popup UI — vanilla TS rendering. Three tabs: Record, Library, Settings.
 // v0.2.0 — Orage Liquid Glass enterprise rebuild.
 // Architecture: compact top header + scrollable main + sticky bottom nav (idle only).
 
@@ -10,7 +10,7 @@ import { zipSync, strToU8 } from "fflate";
 type View =
   | { kind: "loading" }
   | { kind: "signed_out"; mode: "signin" | "signup" }
-  | { kind: "idle"; tab: "record" | "library" | "code" | "settings" }
+  | { kind: "idle"; tab: "record" | "library" | "settings" }
   | { kind: "recording"; state: RecordingSessionState }
   | { kind: "extra_context"; recording: RecordingRow }
   | { kind: "processing"; recording: RecordingRow; stage: "uploading" | "transcribing" | "drafting"; error?: string }
@@ -189,7 +189,7 @@ function compactHeader(): HTMLElement {
 
 // ---- Bottom navigation (idle views) ----
 
-function bottomNav(active: "record" | "library" | "code" | "settings"): HTMLElement {
+function bottomNav(active: "record" | "library" | "settings"): HTMLElement {
   const nav = document.createElement("nav");
   nav.className = "flex";
   nav.style.borderTop = "1px solid rgba(182,128,57,0.12)";
@@ -197,7 +197,7 @@ function bottomNav(active: "record" | "library" | "code" | "settings"): HTMLElem
   nav.style.backdropFilter = "blur(20px)";
   (nav.style as unknown as Record<string, string>)["-webkit-backdrop-filter"] = "blur(20px)";
 
-  const tabs: Array<{ id: "record" | "library" | "code" | "settings"; label: string; icon: string }> = [
+  const tabs: Array<{ id: "record" | "library" | "settings"; label: string; icon: string }> = [
     {
       id: "record",
       label: "Record",
@@ -214,15 +214,6 @@ function bottomNav(active: "record" | "library" | "code" | "settings"): HTMLElem
         <rect x="14" y="3" width="7" height="7" rx="1.5"/>
         <rect x="3" y="14" width="7" height="7" rx="1.5"/>
         <rect x="14" y="14" width="7" height="7" rx="1.5"/>
-      </svg>`,
-    },
-    {
-      id: "code",
-      label: "Code",
-      icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
-        <polyline points="8 7 4 12 8 17"/>
-        <polyline points="16 7 20 12 16 17"/>
-        <line x1="12" y1="5" x2="12" y2="19" stroke-dasharray="2 2"/>
       </svg>`,
     },
     {
@@ -323,10 +314,9 @@ function signedOutView(_mode: "signin" | "signup"): HTMLElement {
 
 // ---- Idle (tabbed) ----
 
-function idleView(tab: "record" | "library" | "code" | "settings"): HTMLElement {
+function idleView(tab: "record" | "library" | "settings"): HTMLElement {
   if (tab === "record")   return recordTab();
   if (tab === "library")  return libraryTab();
-  if (tab === "code")     return codeTab();
   return settingsTab();
 }
 
@@ -757,119 +747,6 @@ function renderCards(container: HTMLElement, rows: Array<RecordingRow & { skills
   }
 }
 
-
-// ---- Code tab — live feed of Claude Code tool calls via Supabase Realtime ----
-
-interface CodeEvent {
-  ts: number;
-  hook: string;
-  tool: string;
-  input?: unknown;
-}
-
-const CODE_FEED_MAX = 50;
-let codeFeedEvents: CodeEvent[] = [];
-let codeRealtimeUnsub: (() => void) | null = null;
-
-function codeTab(): HTMLElement {
-  const d = document.createElement("div");
-  d.className = "px-4 py-4 flex flex-col gap-3";
-  d.style.minHeight = "0";
-
-  const header = document.createElement("div");
-  header.className = "flex items-center justify-between";
-  header.innerHTML = `
-    <span class="label" style="font-size:9px;">CLAUDE CODE FEED</span>
-    <span id="code-dot" style="width:7px;height:7px;border-radius:50%;background:#6b7280;display:inline-block;" title="Connecting…"></span>
-  `;
-  d.appendChild(header);
-
-  const list = document.createElement("div");
-  list.id = "code-feed-list";
-  list.style.cssText = "display:flex;flex-direction:column;gap:6px;overflow-y:auto;max-height:320px;";
-  d.appendChild(list);
-
-  const hint = document.createElement("p");
-  hint.style.cssText = "font-size:10px;color:rgba(255,232,199,0.35);line-height:1.5;margin-top:4px;";
-  hint.textContent = "Events appear here whenever Claude Code runs a tool. Keep this tab open to watch live.";
-  d.appendChild(hint);
-
-  const renderFeed = () => {
-    list.innerHTML = "";
-    if (codeFeedEvents.length === 0) {
-      const empty = document.createElement("div");
-      empty.style.cssText = "font-size:11px;color:rgba(255,232,199,0.28);padding:12px 0;text-align:center;";
-      empty.textContent = "No events yet";
-      list.appendChild(empty);
-      return;
-    }
-    for (let i = codeFeedEvents.length - 1; i >= 0; i--) {
-      const ev = codeFeedEvents[i];
-      const row = document.createElement("div");
-      row.className = "glass";
-      row.style.cssText = "padding:8px 10px;display:flex;flex-direction:column;gap:2px;";
-
-      const age = Math.round((Date.now() - ev.ts) / 1000);
-      const ageStr = age < 60 ? `${age}s ago` : `${Math.round(age / 60)}m ago`;
-      const hookColor = ev.hook === "PreToolUse" ? "rgba(196,138,65,0.9)" : "rgba(100,200,130,0.9)";
-
-      row.innerHTML = `
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-          <span style="font-family:'Bebas Neue',monospace;font-size:13px;color:#FFE8C7;letter-spacing:0.04em;">${escapeHtml(ev.tool)}</span>
-          <span style="font-size:9px;color:rgba(255,232,199,0.35);">${escapeHtml(ageStr)}</span>
-        </div>
-        <div style="font-size:9px;color:${hookColor};letter-spacing:0.06em;">${escapeHtml(ev.hook)}</div>
-        ${ev.input ? `<div style="font-size:9px;color:rgba(255,232,199,0.45);word-break:break-all;margin-top:2px;">${escapeHtml(truncateInput(ev.input))}</div>` : ""}
-      `;
-      list.appendChild(row);
-    }
-  };
-
-  renderFeed();
-
-  // Subscribe to Realtime broadcast channel
-  if (codeRealtimeUnsub) { codeRealtimeUnsub(); codeRealtimeUnsub = null; }
-
-  const supabase = getDataSupabase();
-  const channel = supabase.channel("scout-code");
-  channel
-    .on("broadcast", { event: "tool_call" }, ({ payload }: { payload: CodeEvent }) => {
-      codeFeedEvents.push(payload);
-      if (codeFeedEvents.length > CODE_FEED_MAX) codeFeedEvents.splice(0, codeFeedEvents.length - CODE_FEED_MAX);
-      renderFeed();
-    })
-    .subscribe((status: string) => {
-      const dot = document.getElementById("code-dot");
-      if (!dot) return;
-      if (status === "SUBSCRIBED") {
-        dot.style.background = "#4ade80";
-        dot.title = "Live";
-      } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-        dot.style.background = "#ef4444";
-        dot.title = status;
-      }
-    });
-
-  codeRealtimeUnsub = () => { void supabase.removeChannel(channel); };
-
-  // Clean up when popup navigates away
-  const observer = new MutationObserver(() => {
-    if (!d.isConnected && codeRealtimeUnsub) {
-      codeRealtimeUnsub();
-      codeRealtimeUnsub = null;
-      observer.disconnect();
-    }
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
-
-  return d;
-}
-
-function truncateInput(input: unknown): string {
-  const s = typeof input === "string" ? input : JSON.stringify(input);
-  const first = s.split("\n")[0];
-  return first.length > 80 ? first.slice(0, 80) + "…" : first;
-}
 
 // ---- Settings tab ----
 
