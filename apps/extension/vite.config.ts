@@ -6,8 +6,8 @@ export default defineConfig({
   envDir: "../../",
   plugins: [crx({ manifest })],
   build: {
-    outDir: "dist",
-    emptyOutDir: true,
+    outDir: "../../",
+    emptyOutDir: false,
     rollupOptions: {
       input: {
         offscreen: "src/offscreen/index.html",

@@ -100,17 +100,10 @@ async function init(): Promise<void> {
         view = { kind: "skill", recording: rec as RecordingRow, skill: newest, allSkills: sorted };
         return render();
       }
-      if (rec.status === "uploading" || rec.status === "transcribing" || rec.status === "recording") {
-        const stage: "uploading" | "transcribing" = rec.status === "transcribing" ? "transcribing" : "uploading";
-        view = { kind: "processing", recording: rec as RecordingRow, stage };
+      if (rec.status === "uploading" || rec.status === "transcribing" || rec.status === "recording" || rec.status === "ready") {
+        // Background is generating — just show the library; card shows status.
+        view = { kind: "idle", tab: "library" };
         render();
-        void runAutoGenerate(rec as RecordingRow);
-        return;
-      }
-      if (rec.status === "ready") {
-        view = { kind: "processing", recording: rec as RecordingRow, stage: "drafting" };
-        render();
-        void runAutoGenerate(rec as RecordingRow);
         return;
       }
     }
@@ -957,7 +950,7 @@ function recordingView(s: RecordingSessionState): HTMLElement {
       <button id="pause" class="btn flex-1">${s.is_paused ? "Resume" : "Pause"}</button>
       <button id="stop" class="btn btn-primary flex-1">Stop</button>
     </div>
-    <button id="discard" class="btn w-full" style="color:rgba(220,80,80,0.6);border-color:rgba(220,80,80,0.15);font-size:11px;">Discard recording</button>
+    <button id="discard" class="btn w-full" style="color:rgba(239,68,68,0.85);border-color:rgba(239,68,68,0.35);font-size:11px;">Cancel recording</button>
 
     <!-- Live event feed -->
     <div class="glass p-3" id="live-feed-card" style="min-height:52px;">
@@ -1095,7 +1088,7 @@ function recordingView(s: RecordingSessionState): HTMLElement {
       discardBtn.style.borderColor = "rgba(239,68,68,0.4)";
       discardRevertTimer = setTimeout(() => {
         discardConfirming = false;
-        discardBtn.textContent = "Discard recording";
+        discardBtn.textContent = "Cancel recording";
         discardBtn.style.color = "rgba(220,80,80,0.6)";
         discardBtn.style.borderColor = "rgba(220,80,80,0.15)";
       }, 3000);
@@ -1181,9 +1174,13 @@ function extraContextView(rec: RecordingRow): HTMLElement {
   const save = d.querySelector<HTMLButtonElement>("#ec-save")!;
 
   const proceed = (extra?: string) => {
-    view = { kind: "processing", recording: rec, stage: "uploading" };
+    void chrome.runtime.sendMessage({
+      type: "popup:generate_skill",
+      recording_id: rec.id,
+      extra,
+    } satisfies RuntimeMessage);
+    view = { kind: "idle", tab: "library" };
     render();
-    void runAutoGenerate(rec, extra);
   };
 
   skip.onclick = () => proceed(undefined);
@@ -2203,6 +2200,14 @@ async function refreshSkillView(recordingId: string): Promise<void> {
 }
 
 // ---- Boot ----
+
+chrome.runtime.onMessage.addListener((msg: RuntimeMessage) => {
+  if (msg.type === "popup:skill_ready") {
+    if (view.kind === "idle") {
+      render(); // re-render current tab to pick up the new skill in library
+    }
+  }
+});
 
 void init();
 

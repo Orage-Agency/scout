@@ -9,11 +9,13 @@ import type {
   RecordingSessionState,
   RuntimeMessage,
   CoachAsk,
+  SkillRow,
 } from "../lib/types";
 import { uuid } from "../lib/ids";
 import { drainEvents, enqueueEvent, putScreenshot, deleteScreenshot } from "../lib/queue";
 
 const SESSION_KEY = "recording_session";
+const PENDING_GENERATE_KEY = "scout:pending_generate";
 const FLUSH_INTERVAL_MS = 5000;
 const COACH_INTERVAL_MS = 30000;
 const MIN_ASK_GAP_MS = 60000;
@@ -67,6 +69,106 @@ async function saveSession(s: RecordingSessionState | null): Promise<void> {
   else await chrome.storage.session.remove(SESSION_KEY);
 }
 
+// Generate a skill file in the background. Keeps the SW alive via the fetch.
+// Fires a chrome.notifications notification when done so the user knows it's
+// ready without having to keep the popup open.
+async function runBackgroundGenerate(recordingId: string, extra: string | undefined, accessToken: string): Promise<void> {
+  const db = getDataSupabase();
+  // Seed the data client with the access token so DB reads are authed.
+  if (accessToken) {
+    await db.auth.setSession({ access_token: accessToken, refresh_token: "" }).catch(() => {});
+  }
+
+  // Phase 1: wait until the recording is ready (upload + transcription done).
+  const deadline = Date.now() + 180_000;
+  while (Date.now() < deadline) {
+    const { data } = await db.from("recordings").select("status").eq("id", recordingId).single();
+    const status = (data as { status?: string } | null)?.status;
+    if (status === "ready") break;
+    if (status === "failed") {
+      await chrome.storage.local.remove(PENDING_GENERATE_KEY);
+      chrome.notifications.create(`scout-fail-${recordingId}`, {
+        type: "basic",
+        iconUrl: "public/icons/icon-128.png",
+        title: "Scout",
+        message: "Recording failed during processing.",
+      });
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+
+  // Phase 2: call generate-skill. The pending fetch keeps the SW alive.
+  try {
+    const { data: sess } = await getAuthSupabase().auth.getSession();
+    const token = sess.session?.access_token ?? accessToken;
+    const res = await fetch(functionUrl("generate-skill"), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ recording_id: recordingId, extra }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+
+    const contentType = res.headers.get("content-type") ?? "";
+    let firstSkill: SkillRow | null = null;
+
+    if (contentType.includes("text/event-stream")) {
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      outer: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6).trim();
+          if (!raw || raw === "[DONE]") continue;
+          try {
+            const evt = JSON.parse(raw) as Record<string, unknown>;
+            if (evt.type === "done") {
+              const all = (evt.all as SkillRow[] | undefined) ?? [];
+              firstSkill = all[0] ?? null;
+              break outer;
+            }
+          } catch { /* ignore malformed SSE line */ }
+        }
+      }
+    } else {
+      const json = (await res.json()) as SkillRow & { all?: SkillRow[] };
+      firstSkill = json.all?.[0] ?? json;
+    }
+
+    await chrome.storage.local.remove(PENDING_GENERATE_KEY);
+    chrome.notifications.create(`scout-done-${recordingId}`, {
+      type: "basic",
+      iconUrl: "public/icons/icon-128.png",
+      title: "Scout — Skill ready",
+      message: firstSkill?.title
+        ? `"${firstSkill.title}" is ready in your library.`
+        : "Your skill file is ready in Scout.",
+    });
+    if (firstSkill) {
+      chrome.runtime.sendMessage({ type: "popup:skill_ready", skill: firstSkill } satisfies RuntimeMessage).catch(() => {});
+    }
+    broadcastRecordingChanged(recordingId, "ready");
+  } catch (err) {
+    console.error("[scout] background generate failed", err);
+    await chrome.storage.local.remove(PENDING_GENERATE_KEY);
+    chrome.notifications.create(`scout-err-gen-${recordingId}`, {
+      type: "basic",
+      iconUrl: "public/icons/icon-128.png",
+      title: "Scout",
+      message: "Skill generation failed. Open Scout to retry from your library.",
+    });
+  }
+}
+
 // ---- Recording lifecycle ----
 
 async function startRecording(
@@ -76,23 +178,22 @@ async function startRecording(
 ): Promise<RecordingSessionState | null> {
   const authClient = getAuthSupabase();
   const db = getDataSupabase();
-  const { data: auth } = await authClient.auth.getUser();
-  if (!auth.user) {
+  // Use getSession() instead of getUser() — reads from chrome.storage.local
+  // without a network round-trip. getUser() races against session hydration in
+  // service-worker contexts and fails when the worker just woke up cold.
+  const { data: startSess } = await authClient.auth.getSession();
+  if (!startSess.session?.user) {
     console.warn("[scout] start_recording: not authenticated");
     return null;
   }
-  // Grab the session token now, while the auth client is warm, and store it in
-  // the session state. stopRecording() and onAudioDone() read it back directly
-  // instead of re-initialising the auth bridge (which races on SW wake-up).
-  const { data: startSess } = await authClient.auth.getSession();
-  const accessToken = startSess.session?.access_token ?? "";
+  const accessToken = startSess.session.access_token;
 
   // Create the recording row first so we have a stable id for storage paths.
   const recordingId = uuid();
   const startedAtMs = Date.now();
   const insertRow = {
     id: recordingId,
-    user_id: auth.user.id,
+    user_id: startSess.session.user.id,
     status: "recording",
     mode,
     started_at: new Date(startedAtMs).toISOString(),
@@ -118,7 +219,7 @@ async function startRecording(
   const [activeAtStart] = await chrome.tabs.query({ active: true, currentWindow: true });
   const state: RecordingSessionState = {
     recording_id: recordingId,
-    user_id: auth.user.id,
+    user_id: startSess.session.user.id,
     access_token: accessToken,
     started_at: startedAtMs,
     paused_ms: 0,
@@ -1207,6 +1308,16 @@ chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse)
               .catch(() => {});
           }
           sendResponse({ ok: true });
+          break;
+        }
+        case "popup:generate_skill": {
+          const { recording_id, extra } = msg;
+          await chrome.storage.local.set({ [PENDING_GENERATE_KEY]: { recording_id, extra } });
+          const authClient = getAuthSupabase();
+          const { data: sess } = await authClient.auth.getSession();
+          const accessToken = sess.session?.access_token ?? "";
+          sendResponse({ ok: true });
+          void runBackgroundGenerate(recording_id, extra, accessToken);
           break;
         }
         default:
