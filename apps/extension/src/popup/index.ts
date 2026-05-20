@@ -245,110 +245,61 @@ function loadingView(): HTMLElement {
   return d;
 }
 
-// ---- Auth (magic link / OTP) ----
-// Step 1: user enters email → we call signInWithOtp → move to step 2.
-// Step 2: user enters the 6-digit code from their inbox → verifyOtp → signed in.
-// No passwords. Works for both new and returning users.
+// ---- Auth ----
 
 function signedOutView(_mode: "signin" | "signup"): HTMLElement {
   const d = document.createElement("div");
   d.style.cssText = "display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:560px;padding:0 28px;background:#000;";
   d.style.backgroundImage = "radial-gradient(ellipse 500px 420px at 105% -10%,rgba(182,128,57,0.13) 0%,transparent 62%),radial-gradient(ellipse 480px 480px at -10% 115%,rgba(228,175,122,0.07) 0%,transparent 62%)";
-
-  let pendingEmail = "";
-
-  const renderEmailStep = () => {
-    d.innerHTML = `
-      <div style="font-family:'Bebas Neue',Impact,sans-serif;font-size:50px;letter-spacing:0.05em;color:#E4AF7A;line-height:1;text-transform:uppercase;margin-bottom:4px;">SCOUT</div>
-      <div style="font-family:'Bebas Neue',sans-serif;font-size:10px;letter-spacing:0.28em;color:#B68039;text-transform:uppercase;margin-bottom:28px;">By Orage AI</div>
-      <p style="font-size:13px;line-height:1.65;color:rgba(255,232,199,0.55);text-align:center;max-width:270px;margin-bottom:22px;">Record workflows. Turn them into step-by-step guides.</p>
-      <div style="width:100%;max-width:300px;display:flex;flex-direction:column;gap:10px;">
-        <div class="glass" style="padding:20px;display:flex;flex-direction:column;gap:10px;">
-          <input id="email" type="email" autocomplete="email" placeholder="you@company.com" class="input" />
-          <button id="go" class="btn btn-primary w-full" style="margin-top:4px;">Send code</button>
-        </div>
-        <p style="font-size:10px;color:rgba(255,232,199,0.35);text-align:center;">We'll email you a 6-digit code. No password needed.</p>
-        <p id="err" style="font-size:12px;color:#F87171;text-align:center;min-height:16px;"></p>
+  d.innerHTML = `
+    <div style="font-family:'Bebas Neue',Impact,sans-serif;font-size:50px;letter-spacing:0.05em;color:#E4AF7A;line-height:1;text-transform:uppercase;margin-bottom:4px;">SCOUT</div>
+    <div style="font-family:'Bebas Neue',sans-serif;font-size:10px;letter-spacing:0.28em;color:#B68039;text-transform:uppercase;margin-bottom:28px;">By Orage AI</div>
+    <p style="font-size:13px;line-height:1.65;color:rgba(255,232,199,0.55);text-align:center;max-width:270px;margin-bottom:22px;">Record workflows. Turn them into step-by-step guides.</p>
+    <div id="form-wrap" style="width:100%;max-width:300px;display:flex;flex-direction:column;gap:10px;">
+      <div class="glass" style="padding:20px;display:flex;flex-direction:column;gap:10px;">
+        <input id="email" type="email" autocomplete="email" placeholder="you@company.com" class="input" />
+        <input id="pw" type="password" autocomplete="current-password" placeholder="Password (min 8 chars)" class="input" />
+        <button id="go" class="btn btn-primary w-full" style="margin-top:4px;">Continue</button>
       </div>
-    `;
-    const emailEl = d.querySelector<HTMLInputElement>("#email")!;
-    const errEl   = d.querySelector<HTMLParagraphElement>("#err")!;
-    const goBtn   = d.querySelector<HTMLButtonElement>("#go")!;
+      <p style="font-size:10px;color:rgba(255,232,199,0.35);text-align:center;">New here? We create your account automatically.</p>
+      <p id="err" style="font-size:12px;color:#F87171;text-align:center;min-height:16px;"></p>
+    </div>
+  `;
+  const emailEl = d.querySelector<HTMLInputElement>("#email")!;
+  const pwEl    = d.querySelector<HTMLInputElement>("#pw")!;
+  const errEl   = d.querySelector<HTMLParagraphElement>("#err")!;
+  const goBtn   = d.querySelector<HTMLButtonElement>("#go")!;
 
-    const sendOtp = async () => {
-      const email = emailEl.value.trim();
-      if (!email) { errEl.textContent = "Enter your email address."; return; }
-      errEl.textContent = "";
-      goBtn.disabled = true;
-      goBtn.textContent = "Sending…";
-      try {
-        const auth = getAuthSupabase();
-        const { error } = await auth.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
-        if (error) throw error;
-        pendingEmail = email;
-        renderCodeStep();
-      } catch (e) {
-        errEl.textContent = String((e as Error).message ?? e);
-        goBtn.disabled = false;
-        goBtn.textContent = "Send code";
+  const submit = async () => {
+    const email    = emailEl.value.trim();
+    const password = pwEl.value;
+    if (!email)              { errEl.textContent = "Enter your email."; return; }
+    if (password.length < 8) { errEl.textContent = "Password must be at least 8 characters."; return; }
+    errEl.textContent = "";
+    goBtn.disabled = true;
+    goBtn.textContent = "Signing in…";
+    try {
+      const auth = getAuthSupabase();
+      const { error } = await auth.auth.signInWithPassword({ email, password });
+      if (error) {
+        const msg = String(error.message || "").toLowerCase();
+        if (msg.includes("invalid") || msg.includes("not found")) {
+          goBtn.textContent = "Creating account…";
+          const su = await auth.auth.signUp({ email, password });
+          if (su.error) throw new Error(su.error.message);
+        } else {
+          throw error;
+        }
       }
-    };
-
-    goBtn.onclick = () => void sendOtp();
-    emailEl.onkeydown = (e) => { if (e.key === "Enter") void sendOtp(); };
-    setTimeout(() => emailEl.focus(), 50);
+    } catch (e) {
+      errEl.textContent = String((e as Error).message ?? e);
+      goBtn.disabled = false;
+      goBtn.textContent = "Continue";
+    }
   };
-
-  const renderCodeStep = () => {
-    d.innerHTML = `
-      <div style="font-family:'Bebas Neue',Impact,sans-serif;font-size:50px;letter-spacing:0.05em;color:#E4AF7A;line-height:1;text-transform:uppercase;margin-bottom:4px;">SCOUT</div>
-      <div style="font-family:'Bebas Neue',sans-serif;font-size:10px;letter-spacing:0.28em;color:#B68039;text-transform:uppercase;margin-bottom:28px;">By Orage AI</div>
-      <div style="width:100%;max-width:300px;display:flex;flex-direction:column;gap:10px;">
-        <div class="glass" style="padding:20px;display:flex;flex-direction:column;gap:12px;">
-          <div>
-            <div class="display text-[16px]" style="color:#E4AF7A;margin-bottom:4px;">Check your inbox</div>
-            <p style="font-size:12px;color:rgba(255,232,199,0.55);line-height:1.5;">We sent a 6-digit code to <strong style="color:#FFE8C7;">${pendingEmail}</strong></p>
-          </div>
-          <input id="otp" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6"
-            placeholder="000000" class="input" style="text-align:center;letter-spacing:0.3em;font-size:22px;padding:10px;" />
-          <button id="verify" class="btn btn-primary w-full">Sign in</button>
-        </div>
-        <button id="back" style="font-size:11px;color:rgba(255,232,199,0.35);background:none;border:none;cursor:pointer;text-align:center;padding:4px;">Use a different email</button>
-        <p id="err" style="font-size:12px;color:#F87171;text-align:center;min-height:16px;"></p>
-      </div>
-    `;
-    const otpEl    = d.querySelector<HTMLInputElement>("#otp")!;
-    const errEl    = d.querySelector<HTMLParagraphElement>("#err")!;
-    const verifyBtn= d.querySelector<HTMLButtonElement>("#verify")!;
-    const backBtn  = d.querySelector<HTMLButtonElement>("#back")!;
-
-    const verify = async () => {
-      const token = otpEl.value.replace(/\D/g, "").trim();
-      if (token.length !== 6) { errEl.textContent = "Enter the 6-digit code from your email."; return; }
-      errEl.textContent = "";
-      verifyBtn.disabled = true;
-      verifyBtn.textContent = "Verifying…";
-      try {
-        const auth = getAuthSupabase();
-        const { error } = await auth.auth.verifyOtp({ email: pendingEmail, token, type: "email" });
-        if (error) throw error;
-        // Auth state change listener in init() will re-render automatically.
-      } catch (e) {
-        errEl.textContent = String((e as Error).message ?? "Invalid code — check your email and try again.");
-        verifyBtn.disabled = false;
-        verifyBtn.textContent = "Sign in";
-      }
-    };
-
-    verifyBtn.onclick = () => void verify();
-    otpEl.onkeydown   = (e) => { if (e.key === "Enter") void verify(); };
-    // Auto-submit when 6 digits are pasted or typed
-    otpEl.oninput = () => { if (otpEl.value.replace(/\D/g, "").length === 6) void verify(); };
-    backBtn.onclick = () => renderEmailStep();
-    setTimeout(() => otpEl.focus(), 50);
-  };
-
-  renderEmailStep();
+  goBtn.onclick  = () => void submit();
+  pwEl.onkeydown = (e) => { if (e.key === "Enter") void submit(); };
+  emailEl.onkeydown = (e) => { if (e.key === "Enter") pwEl.focus(); };
   return d;
 }
 
