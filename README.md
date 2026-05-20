@@ -1,9 +1,29 @@
 # Scout v1
 
-> **Latest update (v0.2.6)** — Simpler, friendlier UI for everyone.
-> Tier picker removed. Modes renamed to How-To Guide and Bug Report. Plain English everywhere.
+> **Latest update (v0.2.7)** — Magic link sign-in, one-command setup, and a first-run guide.
+> No more passwords. New users get a 6-digit code by email. `pnpm setup` handles everything from credentials to deployment in one shot.
 
 A Chrome extension that captures human workflows and turns them into structured `SKILL.md` files for AI agents.
+
+---
+
+## What's new in v0.2.7
+
+### Magic link sign-in
+
+Passwords are gone. Enter your email, get a 6-digit code, paste it — done. Works for new and returning users with no separate sign-up step. The code auto-submits when all 6 digits are detected. A "Use a different email" link lets you go back without reloading.
+
+### One-command setup (`pnpm setup`)
+
+New contributors run one command: `pnpm setup`. It checks for Node and pnpm, prompts for Supabase credentials, writes `.env`, installs dependencies, builds the extension, applies all database migrations, and deploys the edge functions. At the end it prints the exact Load Unpacked path.
+
+### Cancel stuck generation
+
+The processing screen now has a **Cancel** button. Clicking it takes you to Library without interrupting the background job — the skill keeps generating and Chrome notifies you when it's ready. If generation takes longer than 90 seconds a warning appears with a nudge to cancel and retry.
+
+### First-run card
+
+First-time users see a three-bullet explainer on the Record tab: record → guide → library. Dismissed with × and never shown again.
 
 ---
 
