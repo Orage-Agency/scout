@@ -1,9 +1,22 @@
 # Scout v1
 
-> **Latest update (v0.2.7)** — Magic link sign-in, one-command setup, and a first-run guide.
-> No more passwords. New users get a 6-digit code by email. `pnpm setup` handles everything from credentials to deployment in one shot.
+> **Latest update (v0.2.8)** — The Run button works.
+> Open any skill in your Library and hit Run. Scout executes the workflow step by step and streams results live.
 
 A Chrome extension that captures human workflows and turns them into structured `SKILL.md` files for AI agents.
+
+---
+
+## What's new in v0.2.8
+
+### Run button is live
+
+The **Run** button on every skill now executes end-to-end. Scout sends the skill to Claude, which parses it into an execution plan and runs each step — streaming progress back in real time directly in the popup.
+
+- API steps execute automatically and show the result
+- Browser steps are flagged with ✋ and described so you can follow along manually
+- A run record is saved to the database so history is preserved even if you close the popup mid-run
+- The `skill_runs` table and `run-skill` Edge Function are fully deployed
 
 ---
 
