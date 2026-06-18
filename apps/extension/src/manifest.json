@@ -28,12 +28,17 @@
     "offscreen",
     "clipboardRead",
     "webNavigation",
-    "notifications"
+    "notifications",
+    "nativeMessaging"
   ],
   "host_permissions": ["<all_urls>"],
   "web_accessible_resources": [
     {
-      "resources": ["src/offscreen/index.html", "assets/*"],
+      "resources": [
+        "src/offscreen/index.html",
+        "src/device-approve/index.html",
+        "assets/*"
+      ],
       "matches": ["<all_urls>"]
     }
   ],

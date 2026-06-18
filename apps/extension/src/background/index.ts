@@ -13,6 +13,7 @@ import type {
 } from "../lib/types";
 import { uuid } from "../lib/ids";
 import { drainEvents, enqueueEvent, putScreenshot, deleteScreenshot } from "../lib/queue";
+import { initDesktopBridge, forwardEvent as forwardEventToDesktop } from "./desktop-bridge";
 
 const SESSION_KEY = "recording_session";
 const PENDING_GENERATE_KEY = "scout:pending_generate";
@@ -559,6 +560,33 @@ async function onContentEvent(ev: CapturedEvent, sender: chrome.runtime.MessageS
   buffer.push(ev);
   pushCoachRing(ev);
   await bumpCounters(ev);
+  forwardWebAnnotation(ev, sender);
+}
+
+// Annotate the desktop tray's recording with browser context (URL + selector).
+// No-op when the desktop isn't recording, so the extension's own recording
+// pipeline is unaffected.
+function forwardWebAnnotation(
+  ev: CapturedEvent,
+  sender?: chrome.runtime.MessageSender,
+): void {
+  const url = sender?.tab?.url ?? (ev.data as { to_url?: string; to_tab_url?: string } | undefined)?.to_url
+    ?? (ev.data as { to_tab_url?: string } | undefined)?.to_tab_url
+    ?? null;
+  if (!url) return;
+  const data = (ev.data ?? {}) as Record<string, unknown>;
+  const target = data.target as { selector?: string; visibleText?: string } | undefined;
+  const field = data.field as { selector?: string; visibleText?: string } | undefined;
+  forwardEventToDesktop({
+    url,
+    title: sender?.tab?.title ?? null,
+    selector: target?.selector ?? field?.selector ?? null,
+    kind: ev.kind,
+    meta: {
+      visibleText: target?.visibleText ?? field?.visibleText ?? undefined,
+      ts_ms: ev.ts_ms,
+    },
+  });
 }
 
 // Chrome rate-limits captureVisibleTab to ~2/sec (MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND).
@@ -616,6 +644,10 @@ async function captureTabAndQueue(
   buffer.push(ev);
   pushCoachRing(ev);
   await bumpCounters(ev);
+  // captureTabAndQueue fires for nav / tab-switch events that don't carry a
+  // sender. Reconstruct a minimal sender so forwardWebAnnotation can pull the
+  // URL out of ev.data.
+  forwardWebAnnotation(ev, { tab: { id: tabId, url: undefined, title: undefined } as chrome.tabs.Tab });
 }
 
 // Returns a human-readable description for the live capture feed.
@@ -1386,6 +1418,11 @@ chrome.commands.onCommand.addListener((command) => {
     }
   })();
 });
+
+// Open the native-messaging bridge to the desktop tray if it's running. The
+// bridge auto-reconnects with a 10s backoff and silently no-ops when the
+// desktop isn't installed, so this is safe to call unconditionally.
+initDesktopBridge();
 
 // On worker wake after hibernation or cold-start:
 //  - Active session with live offscreen → restart timers + restore badge.

@@ -1,0 +1,138 @@
+# electron-builder configuration.
+#
+# Code signing values come from env so this file can live in the repo without
+# leaking secrets:
+#   Windows:
+#     CSC_LINK              — base64 PFX or URL to PFX
+#     CSC_KEY_PASSWORD      — PFX password
+#   macOS:
+#     CSC_LINK / CSC_KEY_PASSWORD — Developer ID cert
+#     APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID — notarization
+#
+# If any of these are missing, the build proceeds unsigned (suitable for
+# internal smoke testing only — public releases must be signed).
+
+appId: agency.orage.scout.desktop
+productName: Scout
+copyright: "Copyright © 2026 Orage Agency"
+artifactName: "${productName}-${version}-${os}-${arch}.${ext}"
+asar: true
+asarUnpack:
+  - "node_modules/uiohook-napi/**/*"
+  - "node_modules/@nut-tree-fork/**/*"
+  - "node_modules/ffmpeg-static/**/*"
+  - "scripts/**/*"
+
+directories:
+  output: release
+  buildResources: build
+
+# Bundle everything except the dev tree.
+files:
+  - "dist/**/*"
+  - "scripts/**/*"
+  - "assets/**/*"
+  - "package.json"
+  - "!**/*.map"
+  - "!**/{__tests__,test,tests,doc,docs}/**"
+  - "!**/.{eslintrc,prettierrc,babelrc}*"
+
+extraResources:
+  - from: "scripts/native-host.js"
+    to: "scripts/native-host.js"
+
+# ---------- Windows ----------
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: appx
+      arch: [x64]
+  icon: "build/icon.ico"
+  publisherName: "Orage Agency"
+  rfc3161TimeStampServer: "http://timestamp.digicert.com"
+  signingHashAlgorithms: ["sha256"]
+  # NSIS handles the install lifecycle. MSIX/Appx is what we submit to the
+  # Microsoft Store.
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Scout
+  artifactName: "Scout-Setup-${version}.${ext}"
+  include: "build/installer.nsh"
+
+appx:
+  applicationId: ScoutDesktop
+  identityName: OrageAgency.Scout
+  publisher: "CN=OrageAgency"            # override at build time with --publisher
+  publisherDisplayName: "Orage Agency"
+  backgroundColor: "#0e0e11"
+  displayName: Scout
+  showNameOnTiles: true
+  languages: ["en-US"]
+  # `runFullTrust` is declared in build/appxmanifest.xml. electron-builder
+  # honours customManifestPath when present, merging Identity/Publisher/Version
+  # in from this file. Without runFullTrust the AppContainer sandbox blocks
+  # uiohook-napi's WH_KEYBOARD_LL/WH_MOUSE_LL installation and we silently
+  # capture nothing.
+  customManifestPath: "build/appxmanifest.xml"
+
+# ---------- macOS ----------
+mac:
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: "build/entitlements.mac.plist"
+  entitlementsInherit: "build/entitlements.mac.plist"
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  icon: "build/icon.icns"
+  extendInfo:
+    NSAppleEventsUsageDescription: "Scout records and replays your input across applications."
+    NSMicrophoneUsageDescription: "Optional. Scout does not record audio unless you enable it."
+    NSScreenCaptureDescription: "Scout records the screen so you can review and replay workflows."
+    LSUIElement: 1   # tray-only — no dock icon
+
+dmg:
+  title: "Scout ${version}"
+  artifactName: "Scout-${version}-${arch}.dmg"
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: "/Applications"
+
+# Notarize after signing. Requires APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD,
+# APPLE_TEAM_ID env vars at build time.
+afterSign: "build/notarize.js"
+
+# ---------- Linux ----------
+linux:
+  category: Utility
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+  icon: "build/icons"
+  desktop:
+    Name: Scout
+    Comment: Capture and replay your workflows
+    StartupWMClass: Scout
+
+# ---------- Publish ----------
+# Auto-update channel. Drop the YAML + .blockmap into the release artifact
+# directory and electron-updater can fetch them.
+publish:
+  - provider: generic
+    url: "https://scout.orage.agency/updates/${os}/${arch}"
+    channel: stable

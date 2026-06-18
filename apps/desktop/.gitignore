@@ -1,0 +1,11 @@
+dist/
+node_modules/
+out/
+release/
+*.tsbuildinfo
+
+# The root .gitignore excludes `build/` (extension vite output). For the
+# desktop app, `build/` holds electron-builder resources (icons, entitlements,
+# NSIS macros, notarize hook, appxmanifest) that must be tracked.
+!build/
+!build/**

@@ -1,0 +1,35 @@
+{
+  "name": "@scout/desktop",
+  "private": true,
+  "version": "0.3.0",
+  "description": "Scout desktop — OS-level workflow capture and replay.",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build:main": "tsc -p tsconfig.main.json",
+    "build": "pnpm build:main",
+    "dev": "pnpm build:main && electron .",
+    "start": "electron .",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit",
+    "rebuild": "electron-rebuild -f -w uiohook-napi",
+    "install-native-host": "node scripts/install-native-host.js",
+    "dist": "pnpm build && electron-builder",
+    "dist:win": "pnpm build && electron-builder --win",
+    "dist:mac": "pnpm build && electron-builder --mac",
+    "dist:linux": "pnpm build && electron-builder --linux",
+    "publish": "pnpm build && electron-builder --publish always"
+  },
+  "dependencies": {
+    "@nut-tree-fork/nut-js": "^4.2.4",
+    "electron-updater": "^6.3.9",
+    "ffmpeg-static": "^5.2.0",
+    "uiohook-napi": "^1.5.4"
+  },
+  "devDependencies": {
+    "@electron/notarize": "^2.5.0",
+    "@electron/rebuild": "^3.7.0",
+    "@types/node": "^22.10.0",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.6.3"
+  }
+}

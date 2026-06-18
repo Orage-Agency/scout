@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Scout is distributed outside the Mac App Store because global input
+        hooks (uiohook-napi) cannot run in a sandboxed app. We sign with the
+        hardened runtime and request only the entitlements we actually need
+        so notarization passes cleanly.
+    -->
+
+    <!-- Permit JIT for the V8 runtime used by Electron. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <!-- Permit unsigned executable memory (V8 codegen). -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- Permit ffmpeg-static + native modules loaded as dylibs. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- Outbound network for Supabase + auto-update. -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- Local-loopback server for the Chrome native-messaging bridge. -->
+    <key>com.apple.security.network.server</key>
+    <true/>
+
+    <!--
+        Apple Events used by AppleScript bridges if/when we add native AX
+        selector resolution in a later chunk.
+    -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+
+    <!--
+        Screen capture (avfoundation) for ffmpeg-based recording. The system
+        will prompt the user the first time the binary tries to read the
+        framebuffer; this entitlement just permits the request.
+    -->
+    <key>com.apple.security.device.screen</key>
+    <true/>
+
+    <!-- Optional microphone — not requested at runtime unless user enables. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

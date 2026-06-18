@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    AppX manifest used when electron-builder produces the MSIX/Appx for the
+    Microsoft Store. electron-builder generates a default manifest from the
+    `appx:` block in electron-builder.yml; this file overrides it so we can
+    declare the `runFullTrust` capability, which is what lets uiohook-napi
+    install a low-level Windows hook (WH_KEYBOARD_LL / WH_MOUSE_LL).
+
+    Without `runFullTrust` we ship a "PWA-flavoured" Appx that silently
+    captures nothing — the AppContainer sandbox blocks the hook installation.
+
+    Submission notes for Partner Center:
+      - Package family name will be derived from identityName +
+        publisher (CN=OrageAgency). Both must match what Partner Center
+        reserved for the app.
+      - This is a "Desktop bridge / Win32" app. In the submission flow, pick
+        "Allow desktop or Centennial" so reviewers don't reject it for using
+        the rescap namespace.
+      - The first review usually takes 3–5 business days because of
+        runFullTrust. Subsequent updates are typically <24h.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap5 rescap">
+
+  <!--
+    electron-builder substitutes Identity / Publisher / Version from
+    electron-builder.yml + package.json at build time. Leaving as placeholders
+    so the file is canonical and we don't accidentally hardcode versions.
+  -->
+  <Identity Name="OrageAgency.Scout"
+            Publisher="CN=OrageAgency"
+            Version="0.3.0.0"
+            ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Scout</DisplayName>
+    <PublisherDisplayName>Orage Agency</PublisherDisplayName>
+    <Logo>assets\StoreLogo.png</Logo>
+    <Description>Record and replay your cross-application workflows.</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop"
+                       MinVersion="10.0.17763.0"
+                       MaxVersionTested="10.0.22631.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="ScoutDesktop"
+                 Executable="Scout.exe"
+                 EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+          DisplayName="Scout"
+          Description="Record and replay your cross-application workflows."
+          BackgroundColor="#0e0e11"
+          Square150x150Logo="assets\Square150x150Logo.png"
+          Square44x44Logo="assets\Square44x44Logo.png">
+        <uap:DefaultTile ShortName="Scout">
+          <uap:ShowNameOnTiles>
+            <uap:ShowOn Tile="square150x150Logo" />
+          </uap:ShowNameOnTiles>
+        </uap:DefaultTile>
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!--
+        runFullTrust is the capability that lets the packaged app escape the
+        AppContainer sandbox so uiohook-napi's global hook + nut.js's mouse
+        injection actually work. It's a *restricted* capability — Partner
+        Center will surface an extra review step. We're declaring it because
+        the app's core function ("record/replay anywhere") literally can't
+        run without it.
+    -->
+    <rescap:Capability Name="runFullTrust" />
+    <Capability Name="internetClient" />
+  </Capabilities>
+</Package>

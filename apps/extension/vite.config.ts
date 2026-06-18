@@ -11,6 +11,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         offscreen: "src/offscreen/index.html",
+        "device-approve": "src/device-approve/index.html",
       },
     },
   },
